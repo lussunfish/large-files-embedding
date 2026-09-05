@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -45,9 +46,21 @@ class FailureReason(StrEnum):
     OUT_OF_SCOPE = "out_of_scope"
     CSV_PROSE = "csv_prose"
     RTF = "rtf"
+    HANG = "hang"
+    SOFFICE_MISSING = "soffice_missing"
+    MOJIBAKE = "mojibake"
+    UNSUPPORTED_CONVERTER = "unsupported_converter"
+    CONVERSION_FAILED = "conversion_failed"
 
 
 CALAMINE_ENGINE = "calamine"
+LIBREOFFICE_CONVERTER = "libreoffice"
+DEFAULT_OFFICE_TIMEOUT_SECONDS = 120.0
+WORD_2007_FILTER = "docx:MS Word 2007 XML"
+PPTX_FILTER = "pptx:Impress MS PowerPoint 2007 XML"
+FORBIDDEN_CONVERTERS = frozenset(
+    {"antiword", "catdoc", "catppt", "python-docx", "python-pptx"}
+)
 
 
 @dataclass(frozen=True)
@@ -68,6 +81,92 @@ class FormatDetector(Protocol):
     def detect(self, path: Path) -> FileSignature:
         """Classify a file by content signature, not extension."""
         ...
+
+
+class NormalizationError(Exception):
+    def __init__(self, reason: FailureReason, message: str | None = None) -> None:
+        self.reason = reason
+        super().__init__(message or reason.value)
+
+
+class ConversionTimeout(NormalizationError):
+    def __init__(self) -> None:
+        super().__init__(FailureReason.HANG)
+
+
+class SofficeMissing(NormalizationError):
+    def __init__(self) -> None:
+        super().__init__(FailureReason.SOFFICE_MISSING)
+
+
+class ConversionFailed(NormalizationError):
+    def __init__(self, reason: FailureReason = FailureReason.CONVERSION_FAILED) -> None:
+        super().__init__(reason)
+
+
+class UnsupportedConverterError(NormalizationError):
+    def __init__(self, converter: str) -> None:
+        self.converter = converter
+        super().__init__(FailureReason.UNSUPPORTED_CONVERTER, converter)
+
+
+def modern_office_target(source_format: DocumentFormat) -> DocumentFormat:
+    if source_format is DocumentFormat.DOC:
+        return DocumentFormat.DOCX
+    if source_format is DocumentFormat.PPT:
+        return DocumentFormat.PPTX
+    raise UnsupportedConverterError(source_format.value)
+
+
+def soffice_filter(source_format: DocumentFormat) -> str:
+    target = modern_office_target(source_format)
+    if target is DocumentFormat.DOCX:
+        return WORD_2007_FILTER
+    return PPTX_FILTER
+
+
+def has_broken_hangul(text: str) -> bool:
+    return "\ufffd" in text or "□□" in text
+
+
+class OfficeNormalizer(Protocol):
+    def convert(
+        self,
+        source: Path,
+        output_dir: Path,
+        *,
+        source_format: DocumentFormat,
+        timeout_seconds: float,
+    ) -> Path:
+        """Convert OLE .doc/.ppt to OOXML. Must not delete source."""
+        ...
+
+
+@dataclass(frozen=True)
+class ConversionMetadata:
+    converted_from: DocumentFormat
+    converter: str
+    converted_at: datetime
+
+    def __post_init__(self) -> None:
+        if (
+            self.converter in FORBIDDEN_CONVERTERS
+            or self.converter != LIBREOFFICE_CONVERTER
+        ):
+            raise UnsupportedConverterError(self.converter)
+        modern_office_target(self.converted_from)
+
+
+@dataclass(frozen=True)
+class NormalizationResult:
+    source_path: Path
+    derived_path: Path | None
+    metadata: ConversionMetadata | None
+    failure_reason: FailureReason | None
+
+    @property
+    def failed(self) -> bool:
+        return self.failure_reason is not None
 
 
 @dataclass(frozen=True)
