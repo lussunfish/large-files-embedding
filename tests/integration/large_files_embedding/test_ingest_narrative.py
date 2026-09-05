@@ -495,7 +495,7 @@ def test_object_store_uses_market_quality_bucket() -> None:
     assert "ebook-pdfs" not in source.replace("FORBIDDEN", "")
 
 
-def test_family_c_cli_skips_tabular(
+def test_family_c_cli_runs_tabular_not_narrative(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _minio_creds(monkeypatch)
@@ -506,7 +506,7 @@ def test_family_c_cli_skips_tabular(
     result = CliRunner().invoke(app, ["ingest", str(path)])
     assert result.exit_code == 0
     assert "family=C" in result.stdout
-    assert "skip=tabular" in result.stdout
+    assert "skip=tabular" not in result.stdout
     assert "chunks=" not in result.stdout
 
 

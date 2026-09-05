@@ -77,6 +77,7 @@ def _run_soffice(
     timeout_seconds: float,
 ) -> Path:
     profile = Path(tempfile.mkdtemp(prefix=f"lo-{source.stem}-"))
+    _lock_macros(profile)
     cmd = [
         str(soffice),
         "--headless",
@@ -109,6 +110,24 @@ def _run_soffice(
         return derived
     finally:
         shutil.rmtree(profile, ignore_errors=True)
+
+
+def _lock_macros(profile: Path) -> None:
+    user = profile / "user"
+    user.mkdir(parents=True, exist_ok=True)
+    (user / "registrymodifications.xcu").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<oor:items xmlns:oor="http://openoffice.org/2001/registry">
+  <item oor:path="/org.openoffice.Office.Common/Security/Scripting">
+    <prop oor:name="MacroSecurityLevel" oor:op="fuse"><value>4</value></prop>
+  </item>
+  <item oor:path="/org.openoffice.Office.Common/Security/Scripting">
+    <prop oor:name="DisableMacrosExecution" oor:op="fuse"><value>true</value></prop>
+  </item>
+</oor:items>
+""",
+        encoding="utf-8",
+    )
 
 
 def _kill_group(proc: subprocess.Popen[bytes]) -> None:

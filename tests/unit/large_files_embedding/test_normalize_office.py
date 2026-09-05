@@ -237,3 +237,5 @@ def test_adapter_does_not_hide_soffice_behind_docling_or_legacy_tools() -> None:
     assert "python-pptx" not in source
     assert "UserInstallation" in source
     assert "timeout" in source
+    assert "MacroSecurityLevel" in source
+    assert "DisableMacrosExecution" in source

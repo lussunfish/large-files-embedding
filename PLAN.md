@@ -101,7 +101,7 @@
 | UC-01 | 파일 시그니처로 포맷을 판별하고 가족(A/B/C/D)으로 라우팅한다 | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_route_file.py` |
 | UC-02 | .doc/.ppt를 LibreOffice로 현대 포맷으로 정규화한다 | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_normalize_office.py` |
 | UC-03 | PDF/DOCX/PPTX를 Docling JSON·HybridChunker로 청크해 Milvus에 넣는다 | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_ingest_narrative.py` |
-| UC-04 | XLSX/XLS/CSV를 calamine/polars로 Parquet 1층·MariaDB 2층에 넣는다 (행 임베딩 금지) | BC-01 | P0 | `planned` | `tests/unit/large_files_embedding/test_ingest_tabular.py` |
+| UC-04 | XLSX/XLS/CSV를 calamine/polars로 Parquet 1층·MariaDB 2층에 넣는다 (행 임베딩 금지) | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_ingest_tabular.py` |
 | UC-05 | MCP 조회 도구(search_passages, get_section, query_tables 등)를 제공한다 | BC-01 | P0 | `planned` | `tests/unit/large_files_embedding/test_serve_mcp.py` |
 | UC-06 | Grok용 stdio MCP config.toml 스니펫을 생성한다 | BC-01 | P0 | `planned` | `tests/unit/large_files_embedding/test_configure_grok.py` |
 
