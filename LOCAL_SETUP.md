@@ -17,7 +17,8 @@ Python 라이브러리는 프로젝트 `.venv`에 넣는다. 시스템 Python(3.
 | libmagic | 시그니처(python-magic) | **설치됨** 5.48 |
 | 프로젝트 `.venv` | Python 라이브러리 | **설치됨** (docling 2.126, polars, duckdb, pymilvus, mcp, sentence-transformers, …) |
 | 공유 인프라 (OrbStack) | MariaDB·Milvus·MinIO | **실행 중** (`01-stable`). 이 레포에서 compose 하지 않음. 상세는 PLAN 인프라 절 |
-| GPU / CUDA | PLAN `USE_GPU=no` | 설치하지 않음 |
+| Ollama | UC-03/05 dense 임베딩 | **실행 중** `127.0.0.1:11434`. 모델 `qwen3-embedding:4b` (2.5GB) **pull 됨** |
+| GPU / CUDA | PLAN `USE_GPU=no` | 설치하지 않음. Ollama가 호스트에서 임베딩 추론 |
 
 ## A. OS 패키지 (지금 설치)
 
@@ -67,30 +68,52 @@ uv pip install --python .venv \
 | `pymilvus` | UC-03/05 Milvus Lite |
 | `mcp` `typer` | UC-05/06 서버·CLI |
 | `python-magic` `filetype` `charset-normalizer` | UC-01 시그니처, UC-04 인코딩 |
-| `sentence-transformers` | UC-03 다국어 dense (BGE-M3 등). 첫 `encode` 때 모델 다운로드 |
+| `sentence-transformers` | 선택. 서술 dense 기본은 Ollama `qwen3-embedding:4b` |
 | `pytest` `ruff` `mypy` | TDD·커밋 전 검사 |
 
 Docling RapidOCR·레이아웃 가중치는 **첫 변환 시** Hugging Face에서 내려받는다. 오프라인 CI는 캐시를 미리 채워야 한다.
 
-## C. 설치하지 않는 것 (비목표·후속)
+## C. Ollama 임베딩 (호스트, 이미 있음)
 
-- Docker, Milvus standalone, MariaDB
+서술 청크 dense는 **Ollama** `qwen3-embedding:4b`다. 벡터 저장소는 Milvus다. MariaDB `embeddings.chunks` VECTOR에 넣지 않는다.
+
+```bash
+# 없으면 설치·pull. 이 머신은 2026-09-05 기준 이미 있음
+ollama --version
+ollama pull qwen3-embedding:4b
+curl -fsS http://127.0.0.1:11434/api/tags
+```
+
+헬스(모델 이름 확인):
+
+```bash
+curl -fsS http://127.0.0.1:11434/api/embed \
+  -d '{"model":"qwen3-embedding:4b","input":"ok"}'
+```
+
+기본 출력 dim은 **2560**. Milvus 컬렉션 스키마와 맞출 것.
+
+## D. 설치하지 않는 것 (비목표·후속)
+
+- Docker, Milvus standalone, MariaDB (공유 `01-stable` 사용)
 - ColQwen / ColPali / GPU 드라이버
 - 한컴 오피스 (09 HWP)
 - JODConverter (대량 soffice 풀, 후속)
+- 서술 dense를 sentence-transformers BGE-M3로 기본 경로 삼기 (Ollama `qwen3-embedding:4b`가 기본)
 
-## D. 설치 후 확인
+## E. 설치 후 확인
 
 ```bash
 uv run --python .venv python -c "import sys; print(sys.version)"
 uv run --python .venv python -c "import docling, polars, duckdb, pymilvus, mcp; print('pyok')"
 /Applications/LibreOffice.app/Contents/MacOS/soffice --version
 ls ~/Library/Fonts | grep -i noto || true
+curl -fsS http://127.0.0.1:11434/api/tags | grep qwen3-embedding
 ```
 
-## E. 구현 순서와의 관계
+## F. 구현 순서와의 관계
 
-1. 이 파일의 A·B 설치
+1. 이 파일의 A·B·C 설치
 2. `PLAN.md` `approved`
 3. `/scaffold` (`pyproject.toml`, `scripts/stop.sh`)
 4. `/implement-uc UC-01`

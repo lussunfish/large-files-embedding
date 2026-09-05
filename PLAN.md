@@ -9,19 +9,20 @@
 
 | 항목 | 값 |
 |------|-----|
-| 상태 | `draft` |
-| 승인자 | — |
-| 승인일 | — |
+| 상태 | `approved` |
+| 승인자 | sunfish |
+| 승인일 | 2026-09-05 |
+| 승인 범위 | v0.5 (UC-01~06, 포맷 01–08, 공유 `01-stable`) |
 
 **상태**: `draft` · `approved` · `revised` (재승인 필요)
 
-승인 전 체크:
+승인 체크:
 
-- [ ] 목표·비목표 합의 (스캔 OCR은 UC-03에 포함. 09+·행 임베딩·ColQwen 전체는 비목표)
-- [ ] UC 우선순위·수용 기준 명확 (MCP 도구 목록이 닫혀 있음)
-- [ ] 표는 프로파일 JSON + Parquet 1층, MariaDB 2층은 매핑된 팩트만
-- [ ] 실행 모드·명령어 확인 (`01-stable` 공유 스택)
-- [ ] Phase 완료 조건이 검증 가능 (어댑터가 인메모리가 아님)
+- [x] 목표·비목표 합의 (스캔 OCR은 UC-03에 포함. 09+·행 임베딩·ColQwen 전체는 비목표)
+- [x] UC 우선순위·수용 기준 명확 (MCP 도구 목록이 닫혀 있음)
+- [x] 표는 프로파일 JSON + Parquet 1층, MariaDB 2층은 매핑된 팩트만
+- [x] 실행 모드·명령어 확인 (`01-stable` 공유 스택)
+- [x] Phase 완료 조건이 검증 가능 (어댑터가 인메모리가 아님)
 
 ---
 
@@ -126,7 +127,7 @@
 
 #### UC-03 — PDF/DOCX/PPTX를 Docling JSON·HybridChunker로 청크해 Milvus에 넣는다
 
-- **Given**: PDF 또는 DOCX 또는 PPTX가 있다. 임베딩 인코더(다국어 dense)가 설정되어 있다
+- **Given**: PDF 또는 DOCX 또는 PPTX가 있다. 임베딩 인코더가 설정되어 있다. dense는 호스트 **Ollama** `qwen3-embedding:4b` (`http://127.0.0.1:11434`, 기본 dim 2560)
 - **When**: 서술 입고를 실행한다
 - **Then**:
   - 원본과 Docling JSON을 둘 다 보관한다. 청크만 남기지 않는다. 마크다운 dump만으로 인덱싱하지 않는다. 고정 길이 슬라이딩 윈도우는 쓰지 않는다. 임베딩 입력은 `chunk.text`가 아니라 `chunker.contextualize(chunk)`다 (`merge_peers=True`, `repeat_table_header=True`). Anthropic contextual retrieval(청크마다 LLM 설명)은 1차가 아니다
@@ -134,7 +135,7 @@
   - **PDF (가족 B)**: 텍스트 층이 있으면 StandardPdfPipeline. 희소/스캔 페이지는 RapidOCR `lang=["korean"]` (기본 lang `chinese` 금지. PP-OCR v6 korean 별칭만 있는 경로는 쓰지 않음). 표는 별도 청크. 막대/원/선은 `--enrich-chart-extraction`을 켜면 표로 넣고, 없어도 UC를 막지 않는다. 100MB는 페이지 스트림으로 읽고 파일을 통째로 메모리에 올리지 않는다. 반복 헤더/푸터는 메타로 빼고 본문 청크에 매 페이지 반복하지 않는다. PDF→DOCX 변환은 기본이 아니다. VlmPipeline은 난해 페이지만 선택이며 디지털 본문 전체를 대체하지 않는다
   - **PPTX (가족 D)**: 슬라이드 1장 = 청크 1개 (제목+본문+**발표자 노트**+차트 캡션/표). 전 슬라이드를 한 blob으로 붙이지 않는다. HybridChunker 섹션 분할로 슬라이드를 쪼개지 않는다. PPTX를 PDF 파이프라인으로 보내지 않는다. bar/pie/line은 Docling 차트 추출(없어도 UC를 막지 않음). 사진·공정 이미지는 캡션이 있으면 캡션, VLM은 후속(`USE_GPU=no`)
   - Milvus payload 메타(필터 가능): `doc_id`, `path`, `family`, `chunk_type(text|table)`, `section_path` 또는 `slide_index`, `page`, `product`, `period`, `doc_type`. 있으면 `vehicle`(차종), `part_no`(품번). 없으면 필드를 null로 두고 3100건 전체를 매번 검색하지 않게 필터 인자를 연다
-  - 각 청크는 dense 벡터로 **공유 Milvus** `127.0.0.1:19530` 컬렉션 `market_quality_chunks_hybrid`에 들어간다. psychology/ebook 컬렉션과 섞지 않는다. 품번·코드를 위해 sparse/BM25를 같이 넣는다. 더미 영벡터 금지. JSON/원본은 MinIO 버킷 `market-quality-docs`에도 올린다
+  - 각 청크의 dense는 Ollama `qwen3-embedding:4b`로 만들고 **공유 Milvus** `127.0.0.1:19530` 컬렉션 `market_quality_chunks_hybrid`에 들어간다 (dim 2560). psychology/ebook 컬렉션과 섞지 않는다. 품번·코드를 위해 sparse/BM25를 같이 넣는다. 더미 영벡터 금지. JSON/원본은 MinIO 버킷 `market-quality-docs`에도 올린다. MariaDB `embeddings.chunks` VECTOR에 서술 청크를 넣지 않는다 (같은 모델이어도 저장소는 Milvus)
 - **실패/경계**: 암호 PDF·깨진 xref·빈 문서·변환 실패는 실패 큐. 인덱싱하지 않는다. 마크다운 dump만 있는 청크, 표를 본문 문장에 섞은 청크는 거부한다
 
 #### UC-04 — XLSX/XLS/CSV를 calamine/polars로 Parquet 1층·MariaDB 2층에 넣는다 (행 임베딩 금지)
@@ -202,7 +203,7 @@
 | `FormatDetector` | `MagicFormatDetector` | UC-01 | 확장자가 아니라 시그니처 |
 | `OfficeNormalizer` | `LibreOfficeNormalizer` | UC-02 | timeout + `UserInstallation`. 동시성 제한. antiword 아님 |
 | `NarrativeParser` | `DoclingNarrativeParser` | UC-03 | JSON 보관. 가족 A/B/D 분기. 고정 길이 청크 아님 |
-| `EmbeddingEncoder` | `DenseSparseEncoder` | UC-03, UC-05 | 더미 벡터 금지. 다국어 dense + sparse/BM25 |
+| `EmbeddingEncoder` | `DenseSparseEncoder` | UC-03, UC-05 | dense = Ollama `qwen3-embedding:4b` (`127.0.0.1:11434`). sparse/BM25는 Milvus. 더미 벡터 금지 |
 | `ChunkStore` | `MilvusChunkStore` | UC-03, UC-05 | `127.0.0.1:19530`, 컬렉션 `market_quality_chunks_hybrid`. C 행 금지. Lite 파일 백엔드 아님 |
 | `ObjectStore` | `MinioObjectStore` | UC-03, UC-04 | `127.0.0.1:9000`, 버킷 `market-quality-docs`. Milvus 내부 MinIO와 합치지 않음 |
 | `TabularExtractor` | `CalamineTabularExtractor` | UC-04 | polars/fastexcel. 프로파일 JSON 포함. Docling XLSX 백엔드 아님 |
@@ -239,7 +240,7 @@
 |-------|--------|------|------|------|
 | UC-02 | LibreOffice soffice | `DOCLING_LIBREOFFICE_CMD` 또는 PATH | — | OS 패키지. 한글 폰트 필요 |
 | UC-03 | **Milvus standalone** `local-milvus` | `MILVUS_URI=http://127.0.0.1:19530` | 19530 gRPC, 9091 health, 8001 Attu | 컬렉션 `market_quality_chunks_hybrid`. Lite(`milvus.db`) 아님. 내부 `local-milvus-minio`는 호스트 포트 없음 |
-| UC-03 | 임베딩 모델 | 다국어 dense (예: BGE-M3) | — | 로컬 가중치 또는 합의된 API. 더미 금지. MariaDB README의 `qwen3-embedding:4b`/VECTOR(2560) 스키마는 이 프로젝트 서술 경로가 아님 |
+| UC-03 | **Ollama** `qwen3-embedding:4b` | `OLLAMA_HOST=http://127.0.0.1:11434`, `EMBEDDING_MODEL=qwen3-embedding:4b` | 11434 | 호스트 프로세스(이 레포 compose 아님). dense dim **2560**. 서술 벡터는 Milvus. MariaDB `embeddings.chunks` VECTOR에 넣지 않음 |
 | UC-03/04 | **MinIO** `local-minio` | `MINIO_ENDPOINT=http://127.0.0.1:9000` | 9000 S3, 9001 콘솔 | 버킷 `market-quality-docs` (앱이 없으면 생성). `psychology-pdfs`/`ebook-pdfs`와 분리 |
 | UC-04 | **MariaDB 11.8** `local-mariadb` | `127.0.0.1:3306`, DB는 앱 스키마 | 3306 | 표 2층. `embeddings.chunks` VECTOR에 서술 청크를 넣지 않음 |
 | UC-05 | (없음) | UC-03/04 인덱스 읽기 | — | 입고 워커와 프로세스 분리 |
@@ -250,6 +251,7 @@
 curl -fsS http://127.0.0.1:9091/healthz          # milvus → OK
 curl -fsS http://127.0.0.1:9000/minio/health/live
 nc -z 127.0.0.1 3306
+curl -fsS http://127.0.0.1:11434/api/tags        # ollama. 목록에 qwen3-embedding:4b
 ```
 
 기동/중지는 이 레포가 아니라 01-stable compose (OrbStack). 끄면 다른 워크스페이스(psychology, ebook)도 멈춘다.
@@ -345,6 +347,7 @@ coder는 이 파일의 Port/Adapter 표를 따른다. `InMemory*`는 테스트 �
 | 월보 스냅샷 UNION | 건수 중복 집계 | `report_period` 필수. 원장만 UNION |
 | 양식 매핑 없이 MariaDB 전량 적재 | 숫자는 들어가고 의미가 틀림 | 1층 Parquet+프로필만. 2층은 매핑된 팩트 |
 | RapidOCR 기본 lang / v6 korean 별칭 | 한글 스캔 깨짐 | `lang=["korean"]` PP-OCR v4/v5 |
+| Ollama 다운·모델 미pull | 서술 입고·`search_passages` 실패 | health에 `:11434`와 `qwen3-embedding:4b` 포함. 엑셀 SQL 조회는 유지 |
 
 ---
 
@@ -357,3 +360,5 @@ coder는 이 파일의 Port/Adapter 표를 따른다. `InMemory*`는 테스트 �
 | 2026-09-05 | 0.3 | 공유 인프라: orbctl/01-stable MariaDB·Milvus·MinIO. Lite/DuckDB는 테스트 더블. 객체 스토어 Port 추가 | `draft` |
 | 2026-09-05 | 0.4 | survey 대조: 메타 필터, parent-child, 표 카탈로그 청크, 스냅샷, 실패 큐, MCP 도구 라우팅·근거 없음 | `draft` |
 | 2026-09-05 | 0.5 | survey 재대조: UC-04 제목 MariaDB, 프로파일 JSON·1층 원본 컬럼, contextualize, 헤더/푸터, RTF/한 열 CSV 실패 큐, antiword/xlrd/Docling XLSX 금지, PPTX 노트, TAG | `draft` |
+| 2026-09-05 | 0.5 | 사용자 승인. UC 구현·`/scaffold` 허용 | `approved` |
+| 2026-09-05 | 0.5 | dense 임베딩: 호스트 Ollama `qwen3-embedding:4b` (dim 2560, Milvus). MariaDB VECTOR 저장 금지는 유지 | `approved` |

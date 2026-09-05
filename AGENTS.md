@@ -86,6 +86,7 @@
 - Milvus 컬렉션은 `market_quality_chunks_hybrid`만. `psychology_chunks_hybrid` / `ebook_chunks_hybrid`에 쓰지 말 것
 - MinIO 버킷은 `market-quality-docs`. `psychology-pdfs` / `ebook-pdfs` 및 Milvus 내부 MinIO와 합치지 말 것
 - MariaDB는 표 2층만. `embeddings.chunks` VECTOR에 서술 청크를 넣지 말 것 (벡터는 Milvus)
+- 서술 dense 임베딩은 호스트 **Ollama** `qwen3-embedding:4b` (`http://127.0.0.1:11434`). sentence-transformers로 BGE-M3를 기본 경로로 두지 말 것. 같은 모델이어도 MariaDB VECTOR에 서술 청크를 넣지 말 것
 - 시크릿은 `01-stable` `.env`에서 읽고 이 레포에 커밋하지 말 것
 
 ### 가족별 (01–08)
@@ -142,10 +143,13 @@
 
 Milvus 스택 안의 `local-milvus-minio` / `local-milvus-etcd`는 내부 전용이다. 앱은 `local-minio`만 쓴다.
 
+서술 dense는 OrbStack이 아니라 호스트 **Ollama** (`127.0.0.1:11434`, 모델 `qwen3-embedding:4b`). 이 레포에서 Ollama를 compose하지 않는다.
+
 ```bash
 curl -fsS http://127.0.0.1:9091/healthz
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9000/minio/health/live
 nc -z 127.0.0.1 3306
+curl -fsS http://127.0.0.1:11434/api/tags   # qwen3-embedding:4b
 ```
 
 ## 명령어
