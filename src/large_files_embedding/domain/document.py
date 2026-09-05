@@ -76,6 +76,10 @@ class FailureReason(StrEnum):
     FORBIDDEN_ENGINE = "forbidden_engine"
     PROFILE_TOO_LARGE = "profile_too_large"
     ORIGINAL_COLUMN_DROPPED = "original_column_dropped"
+    SQL_WRITE = "sql_write"
+    SQL_NOT_ALLOWED = "sql_not_allowed"
+    UNKNOWN_MCP_TOOL = "unknown_mcp_tool"
+    QUERY_FAILED = "query_failed"
 
 
 CALAMINE_ENGINE = "calamine"
@@ -370,9 +374,52 @@ class EmbeddingEncoder(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class QueryFilters:
+    product: str | None = None
+    period: str | None = None
+    doc_type: str | None = None
+
+
+@dataclass(frozen=True)
+class PassageHit:
+    chunk: NarrativeChunk
+    score: float = 0.0
+
+
 class ChunkStore(Protocol):
     def upsert(self, collection: str, records: Sequence[StoredChunk]) -> None:
         """Upsert narrative chunks into the shared Milvus collection."""
+        ...
+
+    def search_hybrid(
+        self,
+        collection: str,
+        *,
+        dense: Sequence[float],
+        query_text: str,
+        filters: QueryFilters,
+        limit: int,
+    ) -> Sequence[PassageHit]:
+        """Dense + sparse hybrid search with metadata filters."""
+        ...
+
+    def query_chunks(
+        self,
+        collection: str,
+        *,
+        filters: QueryFilters | None = None,
+        doc_id: str | None = None,
+        chunk_id: str | None = None,
+        parent_id: str | None = None,
+        chunk_type: ChunkType | None = None,
+        heading_path: str | None = None,
+        page: int | None = None,
+        slide_index: int | None = None,
+        family: DocumentFamily | None = None,
+        limit: int = 16384,
+    ) -> Sequence[NarrativeChunk]:
+        """Read stored chunks by id, heading, page, slide, or filters."""
         ...
 
 
@@ -650,6 +697,14 @@ class TableStore(Protocol):
         """Insert curated fact rows. Must not create a table per file."""
         ...
 
+    def query_readonly(
+        self,
+        sql: str,
+        params: Sequence[object] | None = None,
+    ) -> Sequence[Mapping[str, object]]:
+        """Run allowlisted read-only SQL. Writes must be rejected."""
+        ...
+
 
 def forbid_row_embedding(texts: Sequence[str]) -> None:
     if texts:
@@ -831,3 +886,436 @@ def _clip_profile_value(value: object, limit: int) -> str:
     if limit <= 0:
         return ""
     return text if len(text) <= limit else text[:limit]
+
+
+NO_EVIDENCE = "근거 없음"
+MCP_QUERY_LIMIT = 100
+MCP_QUERY_LIMIT_MAX = 500
+MCP_SEARCH_CANDIDATES = 50
+MCP_SEARCH_TOP_K = 5
+MCP_TOOL_BODY_MAX_CHARS = 4000
+MCP_TOOL_NAMES = (
+    "list_documents",
+    "search_passages",
+    "get_outline",
+    "get_section",
+    "get_table",
+    "get_page",
+    "list_slides",
+    "get_slide",
+    "list_tables",
+    "describe_table",
+    "query_tables",
+)
+FORBIDDEN_MCP_TOOLS = frozenset({"search", "ingest", "delete", "search_hwp"})
+FORBIDDEN_SQL_SCHEMAS = frozenset(
+    {"embeddings", "information_schema", "performance_schema", "mysql", "sys"}
+)
+ALLOWED_SQL_SCHEMAS = frozenset({"", DEFAULT_MARIADB_DATABASE})
+_SQL_WRITE_RE = re.compile(
+    r"\b(DROP|DELETE|INSERT|UPDATE|ALTER|TRUNCATE|CREATE|REPLACE|GRANT|"
+    r"REVOKE|MERGE|CALL|LOAD|HANDLER|LOCK|UNLOCK|INTO\s+OUTFILE|"
+    r"INTO\s+DUMPFILE)\b",
+    re.IGNORECASE,
+)
+_SQL_DANGEROUS_RE = re.compile(
+    r"\b(SLEEP|BENCHMARK|LOAD_FILE|GET_LOCK|RELEASE_LOCK)\b",
+    re.IGNORECASE,
+)
+_SQL_SELECT_HEAD_RE = re.compile(r"^\s*(WITH|SELECT)\b", re.IGNORECASE)
+_SQL_FROM_JOIN_RE = re.compile(
+    r"\b(?:FROM|STRAIGHT_JOIN|JOIN)\s+",
+    re.IGNORECASE,
+)
+_SQL_TABLE_STOP_RE = re.compile(
+    r"\s*(,|\b(?:WHERE|GROUP|ORDER|LIMIT|HAVING|UNION|EXCEPT|INTERSECT|"
+    r"ON|USING|JOIN|STRAIGHT_JOIN|INNER|LEFT|RIGHT|CROSS|NATURAL|FULL|"
+    r"OUTER|SET|WINDOW|FOR|USE|FORCE|IGNORE|PARTITION)\b)",
+    re.IGNORECASE,
+)
+_SQL_INDEX_HINT_HEAD_RE = re.compile(
+    r"^(?:USE|IGNORE|FORCE)\s+(?:INDEX|KEY)"
+    r"(?:\s+FOR\s+(?:JOIN|ORDER\s+BY|GROUP\s+BY))?",
+    re.IGNORECASE,
+)
+_SQL_PARTITION_HEAD_RE = re.compile(r"^PARTITION\b", re.IGNORECASE)
+_SQL_TABLE_NAME_RE = re.compile(
+    r"^`?([A-Za-z0-9_]+)`?(?:\s*\.\s*`?([A-Za-z0-9_]+)`?)?"
+    r"(?:\s+(?:AS\s+)?`?[A-Za-z0-9_]+`?)?\s*$",
+    re.IGNORECASE,
+)
+_SQL_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SQL_LIMIT_TAIL_RE = re.compile(
+    r"\bLIMIT\s+(\d+)\s*(?:,\s*(\d+))?\s*(?:OFFSET\s+(\d+))?\s*$",
+    re.IGNORECASE,
+)
+
+
+class McpQueryError(Exception):
+    def __init__(self, reason: FailureReason, message: str | None = None) -> None:
+        self.reason = reason
+        super().__init__(message or reason.value)
+
+
+@dataclass(frozen=True)
+class McpToolSpec:
+    name: str
+    description: str
+    parameters: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TableCatalogEntry:
+    name: str
+    grain: Grain
+    units: str
+    one_row_meaning: str
+    columns: tuple[str, ...]
+
+
+FACT_TABLE_CATALOG: dict[str, TableCatalogEntry] = {
+    "claim_event": TableCatalogEntry(
+        name="claim_event",
+        grain=Grain.LEDGER,
+        units="quantity=건수",
+        one_row_meaning="클레임 1건",
+        columns=(
+            "source_file",
+            "sheet_name",
+            "report_period",
+            "ingested_at",
+            "template_family",
+            "part_no",
+            "vehicle",
+            "event_date",
+            "cause",
+            "countermeasure",
+            "quantity",
+        ),
+    ),
+    "monthly_quality_kpi": TableCatalogEntry(
+        name="monthly_quality_kpi",
+        grain=Grain.SNAPSHOT,
+        units="claim_count=건, ppm",
+        one_row_meaning="차종×기간 월보 KPI 1행",
+        columns=(
+            "source_file",
+            "sheet_name",
+            "report_period",
+            "ingested_at",
+            "template_family",
+            "vehicle",
+            "claim_count",
+            "ppm",
+        ),
+    ),
+}
+
+MCP_TOOL_SPECS: tuple[McpToolSpec, ...] = (
+    McpToolSpec(
+        name="list_documents",
+        description=(
+            "문서 목록. product/period/doc_type 필터. "
+            "숫자 집계→query_tables(TAG), 원인/대책→get_section, "
+            "품번/코드→search_passages(sparse+필터). search 하나만 두지 않음."
+        ),
+        parameters=("product", "period", "doc_type"),
+    ),
+    McpToolSpec(
+        name="search_passages",
+        description=(
+            "모호한 검색과 품번/코드/키워드는 search_passages. dense+sparse "
+            "하이브리드와 product/period/doc_type 필터. 숫자 집계는 query_tables, "
+            "원인/대책은 get_section. 표 숫자를 서술 청크에서 지어내지 말 것."
+        ),
+        parameters=("query", "product", "period", "doc_type"),
+    ),
+    McpToolSpec(
+        name="get_outline",
+        description="문서 목차(섹션/슬라이드 트리). 원인/대책 장은 get_section.",
+        parameters=("doc_id",),
+    ),
+    McpToolSpec(
+        name="get_section",
+        description=(
+            "원인/대책은 get_section. parent 섹션을 반환하고 잘린 자식 청크만으로 "
+            "답하지 않는다. DOCX 인용은 파일명+섹션 경로가 페이지보다 우선."
+        ),
+        parameters=("doc_id", "heading_path"),
+    ),
+    McpToolSpec(
+        name="get_table",
+        description=(
+            "문서 안 표 청크. 표 숫자 집계는 query_tables. "
+            "서술 청크에서 숫자를 지어내지 말 것."
+        ),
+        parameters=("doc_id", "table_id"),
+    ),
+    McpToolSpec(
+        name="get_page",
+        description="PDF 저장된 페이지 텍스트. ColQwen/비전 인덱스가 아님.",
+        parameters=("doc_id", "page"),
+    ),
+    McpToolSpec(
+        name="list_slides",
+        description=(
+            "PPTX 슬라이드 목록. 한 장은 get_slide. 인용은 파일명+슬라이드 번호."
+        ),
+        parameters=("doc_id",),
+    ),
+    McpToolSpec(
+        name="get_slide",
+        description="PPTX 슬라이드 본문+노트. 인용은 파일명+슬라이드 번호.",
+        parameters=("doc_id", "slide_index"),
+    ),
+    McpToolSpec(
+        name="list_tables",
+        description=(
+            "MariaDB 팩트 표 목록. product/period/doc_type 필터. "
+            "숫자는 query_tables, 원인/대책은 get_section."
+        ),
+        parameters=("product", "period", "doc_type"),
+    ),
+    McpToolSpec(
+        name="describe_table",
+        description="표 grain·단위·한 행의 의미. 집계 전에 호출.",
+        parameters=("name",),
+    ),
+    McpToolSpec(
+        name="query_tables",
+        description=(
+            "숫자 집계는 query_tables(TAG/Text-to-SQL). MariaDB 읽기 전용, LIMIT. "
+            "가능하면 sql보다 filters+group_by. "
+            "DROP/DELETE/INSERT/UPDATE와 허용 스키마 밖 SQL은 거부. "
+            "원인/대책은 get_section, 품번/코드는 search_passages."
+        ),
+        parameters=(
+            "sql",
+            "table",
+            "product",
+            "period",
+            "doc_type",
+            "group_by",
+            "limit",
+        ),
+    ),
+)
+
+
+class McpServer(Protocol):
+    def serve_stdio(self) -> None:
+        """Serve query-only MCP over stdio. No ingest/delete tools."""
+        ...
+
+
+def parent_section_path(heading_path: str | None) -> str:
+    text = (heading_path or "").strip()
+    if not text:
+        return ""
+    if " > " in text:
+        return text.split(" > ", 1)[0].strip()
+    return text
+
+
+def format_citation(chunk: NarrativeChunk) -> str:
+    filename = Path(chunk.path).name if chunk.path else chunk.doc_id
+    if chunk.family is DocumentFamily.A:
+        if chunk.section_path:
+            return f"{filename} {chunk.section_path}"
+        return filename
+    if chunk.family is DocumentFamily.D and chunk.slide_index is not None:
+        base = f"{filename} slide={chunk.slide_index}"
+        if chunk.section_path:
+            return f"{base} {chunk.section_path}"
+        return base
+    if chunk.page is not None:
+        base = f"{filename} page={chunk.page}"
+        if chunk.section_path:
+            return f"{base} {chunk.section_path}"
+        return base
+    if chunk.section_path:
+        return f"{filename} {chunk.section_path}"
+    return filename
+
+
+def format_table_citation(row: Mapping[str, object]) -> str:
+    filename = str(row.get("source_file") or "")
+    sheet = str(row.get("sheet_name") or "")
+    if filename and sheet:
+        return f"{filename} sheet={sheet}"
+    return filename or sheet or "table"
+
+
+def clip_tool_text(text: str, *, pointer: str) -> str:
+    if len(text) <= MCP_TOOL_BODY_MAX_CHARS:
+        return text
+    keep = max(32, MCP_TOOL_BODY_MAX_CHARS - 80)
+    return f"{text[:keep]}\n… truncated pointer={pointer}"
+
+
+def require_sql_ident(name: str) -> str:
+    if not _SQL_IDENT_RE.fullmatch(name):
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, name)
+    return name
+
+
+def require_readonly_sql(sql: str) -> str:
+    if not isinstance(sql, str) or not sql.strip():
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    stripped = sql.strip().rstrip(";")
+    if ";" in stripped:
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    if "/*!" in stripped:
+        if _SQL_WRITE_RE.search(stripped):
+            raise McpQueryError(FailureReason.SQL_WRITE, sql)
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    noise_free = _strip_sql_noise(stripped)
+    if _SQL_WRITE_RE.search(noise_free) or _SQL_WRITE_RE.search(stripped):
+        raise McpQueryError(FailureReason.SQL_WRITE, sql)
+    if _SQL_DANGEROUS_RE.search(noise_free) or _SQL_DANGEROUS_RE.search(stripped):
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    if not _SQL_SELECT_HEAD_RE.search(noise_free):
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    refs = _sql_table_refs(noise_free)
+    if not refs:
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    for schema, table in refs:
+        _reject_sql_table(schema, table)
+    return stripped
+
+
+def ensure_sql_limit(sql: str, limit: int = MCP_QUERY_LIMIT) -> str:
+    capped = max(1, min(int(limit), MCP_QUERY_LIMIT_MAX))
+    stripped = sql.strip()
+    match = _SQL_LIMIT_TAIL_RE.search(stripped)
+    if match is None:
+        return f"{stripped} LIMIT {capped}"
+    first = int(match.group(1))
+    second = match.group(2)
+    offset = match.group(3)
+    prefix = stripped[: match.start()].rstrip()
+    if second is not None:
+        count = min(int(second), capped)
+        return f"{prefix} LIMIT {first}, {count}"
+    count = min(first, capped)
+    if offset is not None:
+        return f"{prefix} LIMIT {count} OFFSET {int(offset)}"
+    return f"{prefix} LIMIT {count}"
+
+
+def _strip_sql_noise(sql: str) -> str:
+    text = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+    text = re.sub(r"--[^\n]*", " ", text)
+    text = re.sub(r"#[^\n]*", " ", text)
+    text = re.sub(r"'(?:''|[^'])*'", "''", text)
+    return re.sub(r'"(?:\\.|[^"\\])*"', '""', text)
+
+
+def _sql_table_refs(sql: str) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    for match in _SQL_FROM_JOIN_RE.finditer(sql):
+        rest = sql[match.end() :]
+        token, rest = _next_sql_table_token(rest)
+        _collect_sql_table_token(token, refs)
+        rest = _skip_sql_table_hints(rest)
+        while rest.lstrip().startswith(","):
+            rest = rest.lstrip()[1:]
+            token, rest = _next_sql_table_token(rest)
+            _collect_sql_table_token(token, refs)
+            rest = _skip_sql_table_hints(rest)
+    return refs
+
+
+def _skip_balanced_parens(rest: str) -> str:
+    rest = rest.lstrip()
+    if not rest.startswith("("):
+        return rest
+    depth = 0
+    for index, char in enumerate(rest):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return rest[index + 1 :]
+    return ""
+
+
+def _skip_sql_table_hints(rest: str) -> str:
+    while True:
+        stripped = rest.lstrip()
+        hint = _SQL_INDEX_HINT_HEAD_RE.match(stripped)
+        if hint is not None:
+            rest = _skip_balanced_parens(stripped[hint.end() :])
+            continue
+        partition = _SQL_PARTITION_HEAD_RE.match(stripped)
+        if partition is not None:
+            rest = _skip_balanced_parens(stripped[partition.end() :])
+            continue
+        return stripped
+
+
+def _next_sql_table_token(rest: str) -> tuple[str, str]:
+    rest = rest.lstrip()
+    if not rest:
+        return "", ""
+    if rest.startswith("("):
+        depth = 0
+        for index, char in enumerate(rest):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    return rest[: index + 1], rest[index + 1 :]
+        return rest, ""
+    stop = _SQL_TABLE_STOP_RE.search(rest)
+    if stop is None:
+        return rest.strip(), ""
+    return rest[: stop.start()].strip(), rest[stop.start() :]
+
+
+def _collect_sql_table_token(token: str, refs: list[tuple[str, str]]) -> None:
+    token = token.strip()
+    if not token:
+        return
+    if token.startswith("("):
+        inner = token[1:-1] if token.endswith(")") else token[1:]
+        refs.extend(_sql_table_refs(inner))
+        return
+    parsed = _parse_sql_table(token)
+    if parsed is None:
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, token)
+    refs.append(parsed)
+
+
+def _parse_sql_table(token: str) -> tuple[str, str] | None:
+    match = _SQL_TABLE_NAME_RE.match(token.strip())
+    if match is None:
+        return None
+    first = match.group(1)
+    second = match.group(2)
+    if second:
+        return first.lower(), second
+    return "", first
+
+
+def _reject_sql_table(schema: str, table: str) -> None:
+    schema_l = schema.lower()
+    table_l = table.lower()
+    qualified = f"{schema_l}.{table_l}" if schema_l else table_l
+    if (
+        schema_l == "embeddings"
+        or table_l in FORBIDDEN_SQL_TABLES
+        or qualified in FORBIDDEN_SQL_TABLES
+        or table_l == "chunks"
+    ):
+        raise McpQueryError(FailureReason.EMBEDDINGS_VECTOR, qualified or table)
+    if schema_l in FORBIDDEN_SQL_SCHEMAS:
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, qualified or table)
+    if schema_l and schema_l not in ALLOWED_SQL_SCHEMAS:
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, qualified or table)
+    if table_l.endswith("_blob") or table_l == "xlsx_blob":
+        raise McpQueryError(FailureReason.XLSX_BLOB, table)
+    if table not in ALLOWED_FACT_TABLES and table_l not in ALLOWED_FACT_TABLES:
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, table)

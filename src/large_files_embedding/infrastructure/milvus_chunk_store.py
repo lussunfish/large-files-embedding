@@ -3,19 +3,49 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
-from pymilvus import DataType, Function, FunctionType, MilvusClient
+from pymilvus import (
+    AnnSearchRequest,
+    DataType,
+    Function,
+    FunctionType,
+    MilvusClient,
+    RRFRanker,
+)
 
 from large_files_embedding.domain.document import (
     PARENT_ID_MAX_LENGTH,
     SECTION_PATH_MAX_LENGTH,
+    ChunkType,
+    DocumentFamily,
     FailureReason,
+    NarrativeChunk,
     NarrativeIngestError,
+    PassageHit,
+    QueryFilters,
     StoredChunk,
     clip_varchar,
     require_collection,
     require_milvus_uri,
+)
+
+_OUTPUT_FIELDS = (
+    "chunk_id",
+    "doc_id",
+    "path",
+    "family",
+    "chunk_type",
+    "section_path",
+    "slide_index",
+    "page",
+    "product",
+    "period",
+    "doc_type",
+    "vehicle",
+    "part_no",
+    "parent_id",
+    "text",
 )
 
 
@@ -63,13 +93,138 @@ class MilvusChunkStore:
         except Exception as exc:
             raise NarrativeIngestError(FailureReason.PARSE_FAILED) from exc
 
+    def search_hybrid(
+        self,
+        collection: str,
+        *,
+        dense: Sequence[float],
+        query_text: str,
+        filters: QueryFilters,
+        limit: int,
+    ) -> list[PassageHit]:
+        name = require_collection(collection)
+        if name != self._collection:
+            raise NarrativeIngestError(FailureReason.FORBIDDEN_COLLECTION, name)
+        client = self._client_or_connect()
+        self._load_collection(client)
+        expr = _filter_expr(filters=filters)
+        dense_req = AnnSearchRequest(
+            data=[list(dense)],
+            anns_field="dense",
+            param={"metric_type": "COSINE", "params": {"ef": 64}},
+            limit=limit,
+            expr=expr or None,
+        )
+        sparse_req = AnnSearchRequest(
+            data=[query_text],
+            anns_field="sparse",
+            param={"metric_type": "BM25"},
+            limit=limit,
+            expr=expr or None,
+        )
+        hits: list[object]
+        try:
+            results = client.hybrid_search(
+                collection_name=self._collection,
+                reqs=[dense_req, sparse_req],
+                ranker=RRFRanker(),
+                limit=limit,
+                output_fields=list(_OUTPUT_FIELDS),
+            )
+            hits = results[0] if results else []
+        except Exception:
+            try:
+                results = client.search(
+                    collection_name=self._collection,
+                    data=[list(dense)],
+                    anns_field="dense",
+                    limit=limit,
+                    filter=expr,
+                    output_fields=list(_OUTPUT_FIELDS),
+                    search_params={"metric_type": "COSINE", "params": {"ef": 64}},
+                )
+                hits = results[0] if results else []
+            except Exception as exc:
+                raise NarrativeIngestError(FailureReason.QUERY_FAILED) from exc
+        out: list[PassageHit] = []
+        for hit in hits:
+            chunk = _mapping_to_chunk(_hit_mapping(hit))
+            if chunk is None:
+                continue
+            score = _hit_score(hit)
+            out.append(PassageHit(chunk=chunk, score=score))
+        return out
+
+    def query_chunks(
+        self,
+        collection: str,
+        *,
+        filters: QueryFilters | None = None,
+        doc_id: str | None = None,
+        chunk_id: str | None = None,
+        parent_id: str | None = None,
+        chunk_type: ChunkType | None = None,
+        heading_path: str | None = None,
+        page: int | None = None,
+        slide_index: int | None = None,
+        family: DocumentFamily | None = None,
+        limit: int = 16384,
+    ) -> list[NarrativeChunk]:
+        name = require_collection(collection)
+        if name != self._collection:
+            raise NarrativeIngestError(FailureReason.FORBIDDEN_COLLECTION, name)
+        client = self._client_or_connect()
+        self._load_collection(client)
+        expr = (
+            _filter_expr(
+                filters=filters,
+                doc_id=doc_id,
+                chunk_id=chunk_id,
+                parent_id=parent_id,
+                chunk_type=chunk_type,
+                heading_path=heading_path,
+                page=page,
+                slide_index=slide_index,
+                family=family,
+            )
+            or 'chunk_id != ""'
+        )
+        try:
+            rows = client.query(
+                collection_name=self._collection,
+                filter=expr,
+                output_fields=list(_OUTPUT_FIELDS),
+                limit=max(1, min(int(limit), 16384)),
+            )
+        except Exception as exc:
+            raise NarrativeIngestError(FailureReason.QUERY_FAILED) from exc
+        chunks: list[NarrativeChunk] = []
+        for row in rows:
+            chunk = _mapping_to_chunk(row if isinstance(row, Mapping) else {})
+            if chunk is not None:
+                chunks.append(chunk)
+        return chunks
+
     def _client_or_connect(self) -> MilvusClient:
         if self._client is None:
             self._client = MilvusClient(uri=self._uri)
         return self._client
 
+    def _load_collection(self, client: MilvusClient) -> None:
+        try:
+            exists = client.has_collection(self._collection)
+        except Exception as exc:
+            raise NarrativeIngestError(FailureReason.QUERY_FAILED) from exc
+        if not exists:
+            raise NarrativeIngestError(FailureReason.QUERY_FAILED, self._collection)
+        try:
+            client.load_collection(self._collection)
+        except Exception as exc:
+            raise NarrativeIngestError(FailureReason.QUERY_FAILED) from exc
+
     def _ensure_collection(self, client: MilvusClient) -> None:
         if client.has_collection(self._collection):
+            client.load_collection(self._collection)
             return
         schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=True)
         schema.add_field("chunk_id", DataType.VARCHAR, is_primary=True, max_length=128)
@@ -181,3 +336,136 @@ def _row(
         "text": text,
         "dense": dense,
     }
+
+
+def _quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _filter_expr(
+    *,
+    filters: QueryFilters | None = None,
+    doc_id: str | None = None,
+    chunk_id: str | None = None,
+    parent_id: str | None = None,
+    chunk_type: ChunkType | None = None,
+    heading_path: str | None = None,
+    page: int | None = None,
+    slide_index: int | None = None,
+    family: DocumentFamily | None = None,
+) -> str:
+    parts: list[str] = []
+    if filters is not None:
+        if filters.product:
+            parts.append(f"product == {_quote(filters.product)}")
+        if filters.period:
+            parts.append(f"period == {_quote(filters.period)}")
+        if filters.doc_type:
+            parts.append(f"doc_type == {_quote(filters.doc_type)}")
+    if doc_id:
+        parts.append(f"doc_id == {_quote(doc_id)}")
+    if chunk_id:
+        parts.append(f"chunk_id == {_quote(chunk_id)}")
+    if parent_id:
+        parts.append(f"parent_id == {_quote(parent_id)}")
+    if chunk_type is not None:
+        parts.append(f"chunk_type == {_quote(chunk_type.value)}")
+    if family is not None:
+        parts.append(f"family == {_quote(family.value)}")
+    if heading_path:
+        exact = f"section_path == {_quote(heading_path)}"
+        prefix = f"section_path like {_quote(heading_path + ' >%')}"
+        parts.append(f"({exact} or {prefix})")
+    if page is not None:
+        parts.append(f"page == {int(page)}")
+    if slide_index is not None:
+        parts.append(f"slide_index == {int(slide_index)}")
+    return " and ".join(parts)
+
+
+def _hit_mapping(hit: object) -> Mapping[str, object]:
+    if isinstance(hit, Mapping):
+        entity = hit.get("entity")
+        if isinstance(entity, Mapping):
+            merged = dict(entity)
+            if "distance" in hit:
+                merged["distance"] = hit["distance"]
+            if "score" in hit:
+                merged["score"] = hit["score"]
+            return merged
+        return hit
+    entity = getattr(hit, "entity", None)
+    data: dict[str, object] = {}
+    if isinstance(entity, Mapping):
+        data.update(entity)
+    elif entity is not None:
+        for field in _OUTPUT_FIELDS:
+            getter = getattr(entity, "get", None)
+            if callable(getter):
+                data[field] = getter(field)
+    if not data:
+        getter = getattr(hit, "get", None)
+        if callable(getter):
+            for field in _OUTPUT_FIELDS:
+                data[field] = getter(field)
+    data.setdefault("distance", getattr(hit, "distance", 0.0))
+    return data
+
+
+def _hit_score(hit: object) -> float:
+    if isinstance(hit, Mapping):
+        value = hit.get("score", hit.get("distance", 0.0))
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    value = getattr(hit, "score", None)
+    if value is None:
+        value = getattr(hit, "distance", 0.0)
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _mapping_to_chunk(row: Mapping[str, object]) -> NarrativeChunk | None:
+    try:
+        family = DocumentFamily(str(row.get("family") or ""))
+        chunk_type = ChunkType(str(row.get("chunk_type") or ChunkType.TEXT.value))
+    except ValueError:
+        return None
+    chunk_id = str(row.get("chunk_id") or "")
+    doc_id = str(row.get("doc_id") or "")
+    if not chunk_id or not doc_id:
+        return None
+    page = _as_int(row.get("page"), -1)
+    slide = _as_int(row.get("slide_index"), -1)
+    text = str(row.get("text") or "")
+    return NarrativeChunk(
+        chunk_id=chunk_id,
+        doc_id=doc_id,
+        path=str(row.get("path") or ""),
+        family=family,
+        chunk_type=chunk_type,
+        text=text,
+        embedding_input=text,
+        section_path=str(row.get("section_path") or "") or None,
+        slide_index=None if slide < 0 else slide,
+        page=None if page < 0 else page,
+        parent_id=str(row.get("parent_id") or "") or None,
+        product=str(row.get("product") or "") or None,
+        period=str(row.get("period") or "") or None,
+        doc_type=str(row.get("doc_type") or "") or None,
+        vehicle=str(row.get("vehicle") or "") or None,
+        part_no=str(row.get("part_no") or "") or None,
+    )
+
+
+def _as_int(value: object, default: int) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return default

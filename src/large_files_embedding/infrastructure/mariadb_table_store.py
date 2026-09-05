@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pymysql
+from pymysql.cursors import DictCursor
 
 from large_files_embedding.domain.document import (
     DEFAULT_MARIADB_DATABASE,
@@ -16,8 +17,11 @@ from large_files_embedding.domain.document import (
     DEFAULT_MARIADB_PORT,
     FailureReason,
     Grain,
+    McpQueryError,
     TabularIngestError,
+    ensure_sql_limit,
     require_fact_table,
+    require_readonly_sql,
     require_snapshot_period,
 )
 
@@ -143,6 +147,35 @@ class MariaDbTableStore:
         except Exception as exc:
             raise TabularIngestError(FailureReason.EXTRACT_FAILED) from exc
         return len(payload)
+
+    def query_readonly(
+        self,
+        sql: str,
+        params: Sequence[object] | None = None,
+    ) -> list[dict[str, object]]:
+        validated = require_readonly_sql(sql)
+        limited = ensure_sql_limit(validated)
+        try:
+            connection = self._connect()
+            with connection.cursor(DictCursor) as cursor:
+                try:
+                    cursor.execute("SET SESSION max_statement_time=5")
+                except Exception:
+                    pass
+                connection.rollback()
+                cursor.execute("START TRANSACTION READ ONLY")
+                try:
+                    cursor.execute(limited, tuple(params or ()))
+                    rows = cursor.fetchall()
+                finally:
+                    connection.rollback()
+        except McpQueryError:
+            raise
+        except TabularIngestError:
+            raise
+        except Exception as exc:
+            raise TabularIngestError(FailureReason.EXTRACT_FAILED) from exc
+        return [dict(row) for row in rows]
 
     def ensure_schema(self) -> None:
         self._ensure_schema(self._connect())

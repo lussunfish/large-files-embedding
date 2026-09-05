@@ -15,3 +15,11 @@ def _root() -> None:
 def health() -> None:
     """Print ok. Used as a CLI smoke check."""
     typer.echo("ok")
+
+
+@app.command()
+def mcp() -> None:
+    """Run query-only MCP over stdio for Grok."""
+    from large_files_embedding.presentation.mcp.server import run_stdio
+
+    run_stdio()
