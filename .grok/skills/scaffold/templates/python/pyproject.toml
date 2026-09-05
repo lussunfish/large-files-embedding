@@ -1,0 +1,38 @@
+[project]
+name = "{{PYPROJECT_NAME}}"
+version = "0.1.0"
+description = "{{ONE_LINE_DESCRIPTION}}"
+readme = "README.md"
+requires-python = ">={{RUNTIME_VERSION}}"
+dependencies = [
+{{APP_DEPENDENCIES}}
+]
+
+[dependency-groups]
+dev = [
+{{DEV_DEPENDENCIES}}
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "{{RUFF_TARGET}}"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "{{RUNTIME_VERSION}}"
+files = ["src"]
+strict = false
+
+[[tool.mypy.overrides]]
+module = ["uvicorn", "uvicorn.*"]
+ignore_missing_imports = true

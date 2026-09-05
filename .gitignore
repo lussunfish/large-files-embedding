@@ -1,0 +1,35 @@
+.DS_Store
+hello.txt
+.env
+.env.*
+!.env.example
+*.local
+
+# 부트스트랩 산출 (생성 후 추적하지 않음)
+init/
+TEMPLATE.md
+
+# Python / uv (init 이후 프로젝트에서도 유효)
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# implement-uc 런타임 산출 (구현 계획·리뷰)
+.grok/uc-plans/
+
+# 템플릿/세션 리뷰 메모 (프로젝트에 복제하지 않음)
+.grok/reviews/
+
+# 다른 스택 (init 병합과 동일)
+node_modules/
+target/
+vendor/

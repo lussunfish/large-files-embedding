@@ -1,0 +1,5 @@
+# Tests reviewer — coverage / Red scenarios (effort ≥ 3)
+description = "Test coverage reviewer for implement-uc"
+default_capability_mode = "all"
+reasoning_effort = "medium"
+default_fork_context = true

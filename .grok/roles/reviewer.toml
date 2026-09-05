@@ -1,0 +1,5 @@
+# Reviewer — correctness / PLAN / TDD
+description = "Independent code reviewer for implement-uc"
+default_capability_mode = "all"
+reasoning_effort = "medium"
+default_fork_context = true

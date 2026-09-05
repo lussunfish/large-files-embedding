@@ -1,0 +1,5 @@
+# Coder — TDD implementer
+description = "PLAN.md UC TDD implementer"
+default_capability_mode = "all"
+reasoning_effort = "medium"
+default_fork_context = true

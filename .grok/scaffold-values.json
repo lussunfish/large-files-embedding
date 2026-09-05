@@ -1,0 +1,27 @@
+{
+  "PROJECT_NAME": "large-files-embedding",
+  "ONE_LINE_DESCRIPTION": "시장품질 문서(PDF/DOCX/DOC/XLSX/XLS/CSV/PPTX/PPT)를 입고하고 Codex CLI MCP로 조회하는 로컬 서비스",
+  "LANGUAGE": "Python",
+  "RUNTIME_VERSION": "3.12",
+  "PYTHON_PACKAGE": "large_files_embedding",
+  "PACKAGE_ROOT": "src/large_files_embedding",
+  "RUNTIME_MODE": "uv-native",
+  "WEB_FRAMEWORK": "—",
+  "CLI_FRAMEWORK": "Typer",
+  "HAS_HTTP": false,
+  "ENV_VARS": [
+    {
+      "name": "LOG_LEVEL",
+      "example": "info"
+    },
+    {
+      "name": "DATA_DIR",
+      "example": "./data"
+    },
+    {
+      "name": "MILVUS_URI",
+      "example": "milvus.db"
+    }
+  ],
+  "TEMPLATE_VERSION": "0.5.0"
+}

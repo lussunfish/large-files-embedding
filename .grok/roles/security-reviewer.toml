@@ -1,0 +1,5 @@
+# Security reviewer — exploitable issues only
+description = "Security reviewer for implement-uc"
+default_capability_mode = "all"
+reasoning_effort = "high"
+default_fork_context = true

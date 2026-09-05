@@ -1,0 +1,4 @@
+# Planner — read-only UC implementation plan
+description = "PLAN.md UC implementation planner (read-only)"
+default_capability_mode = "read-only"
+reasoning_effort = "high"
