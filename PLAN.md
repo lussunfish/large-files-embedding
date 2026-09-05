@@ -31,7 +31,7 @@
 - 01–08 포맷을 시그니처 기준으로 라우팅해 서술 문서는 벡터, 표는 SQL로 입고한다
 - HybridChunker JSON 청크를 **공유 Milvus**(`127.0.0.1:19530`)에 넣고, 엑셀/CSV는 Parquet 랜딩 후 **MariaDB**로 조회한다
 - 원본·파생 객체는 **공유 MinIO**(`127.0.0.1:9000`) 버킷에 둔다
-- Codex CLI에 stdio MCP를 연동해 담당자가 근거 있는 인사이트를 얻는다
+- Grok(stdio MCP)에 연동해 담당자가 근거 있는 인사이트를 얻는다
 - Clean Architecture + TDD, 호스트 uv로 개발·실행
 
 ## 비목표
@@ -46,7 +46,7 @@
 - 이 레포에서 Milvus/MinIO/MariaDB compose를 새로 띄우기 (`01-stable` 공유 스택을 쓴다)
 - 공유 MariaDB의 `embeddings.chunks` VECTOR 테이블에 서술 청크를 넣기 (벡터는 Milvus)
 - 웹 UI, 클라우드 전용 파서·변환 API
-- 사용자 홈의 `~/.codex/config.toml`을 직접 덮어쓰기 (스니펫만 생성)
+- 사용자 홈의 `~/.grok/config.toml`을 직접 덮어쓰기 (스니펫만 생성). `~/.codex/config.toml`도 건드리지 않음
 - ColQwen/ColPali 페이지 비전 인덱스 (후속)
 
 ## 범위
@@ -58,7 +58,7 @@
 - UC-03: PDF/DOCX/PPTX 서술 입고 (Docling JSON, 공유 Milvus 컬렉션, 임베딩)
 - UC-04: XLSX/XLS/CSV 표 입고 (calamine/polars, 프로파일 JSON, Parquet 1층→MinIO, 조회용 팩트는 MariaDB). 행 임베딩 금지
 - UC-05: MCP 조회 전용 도구 (목록은 UC-05 수용 기준)
-- UC-06: Codex용 stdio MCP `config.toml` **스니펫 생성** (홈 파일 미수정)
+- UC-06: Grok용 stdio MCP `[mcp_servers.*]` **스니펫 생성** (홈 `~/.grok/config.toml` 미수정)
 
 ### 제외
 
@@ -103,7 +103,7 @@
 | UC-03 | PDF/DOCX/PPTX를 Docling JSON·HybridChunker로 청크해 Milvus에 넣는다 | BC-01 | P0 | `planned` | `tests/unit/large_files_embedding/test_ingest_narrative.py` |
 | UC-04 | XLSX/XLS/CSV를 calamine/polars로 Parquet 1층·MariaDB 2층에 넣는다 (행 임베딩 금지) | BC-01 | P0 | `planned` | `tests/unit/large_files_embedding/test_ingest_tabular.py` |
 | UC-05 | MCP 조회 도구(search_passages, get_section, query_tables 등)를 제공한다 | BC-01 | P0 | `planned` | `tests/unit/large_files_embedding/test_serve_mcp.py` |
-| UC-06 | Codex용 stdio MCP config.toml 스니펫을 생성한다 | BC-01 | P0 | `planned` | `tests/unit/large_files_embedding/test_configure_codex.py` |
+| UC-06 | Grok용 stdio MCP config.toml 스니펫을 생성한다 | BC-01 | P0 | `planned` | `tests/unit/large_files_embedding/test_configure_grok.py` |
 
 상태: `planned` · `in_progress` · `done` · `deferred` · `cancelled`
 
@@ -168,12 +168,12 @@
   - `list_tables` / `describe_table` (grain·단위·한 행의 의미) / `query_tables` — MariaDB **읽기 전용**, LIMIT. 가능하면 임의 SQL보다 filters+group_by
 - **실패/경계**: 허용 스키마 밖 SQL·쓰기(`DROP`/`DELETE`/`INSERT`/`UPDATE`)는 거부한다. 입고·삭제는 MCP에 두지 않는다. 도구 출력이 길면 잘라서 포인터만 남긴다
 
-#### UC-06 — Codex용 stdio MCP config.toml 스니펫을 생성한다
+#### UC-06 — Grok용 stdio MCP config.toml 스니펫을 생성한다
 
 - **Given**: UC-05 stdio MCP 엔트리포인트가 있다
 - **When**: 연동 설정을 생성한다
-- **Then**: 저장소 안 스니펫(예: `deploy/codex-mcp.toml`)이 나온다. 키: `command`, `args`, `cwd`, `startup_timeout_sec`(≥30), `tool_timeout_sec`. **홈 디렉터리 `~/.codex/config.toml`을 수정하지 않는다**
-- **실패/경계**: command가 비면 거부한다
+- **Then**: 저장소 안 스니펫(예: `deploy/grok-mcp.toml`)이 나온다. Grok `[mcp_servers.market-quality]` 형식. 키: `command`, `args`, `cwd`, `enabled`, `startup_timeout_sec`(≥30), `tool_timeout_sec`. 예: `command = "uv"`, `args = ["run", "python", "-m", "large_files_embedding", "mcp"]`. **홈 `~/.grok/config.toml`을 수정하지 않는다.** 운영자가 프로젝트 `.grok/config.toml`에 붙이거나 `grok mcp add --scope project`로 넣는다
+- **실패/경계**: command가 비면 거부한다. 기존 `.grok/skills`·에이전트 설정을 덮지 않는다
 
 ---
 
@@ -194,7 +194,7 @@
 | UC-03 | `document.py` | `ingest_narrative.py` | `docling_adapter.py`, `embedding_encoder.py`, `milvus_chunk_store.py`, `minio_object_store.py` | `cli/ingest.py` |
 | UC-04 | `document.py` | `ingest_tabular.py` | `calamine_extractor.py`, `mariadb_table_store.py`, `minio_object_store.py` | `cli/ingest.py` |
 | UC-05 | `document.py` | `serve_mcp.py` | `milvus_chunk_store.py`, `mariadb_table_store.py` (읽기) | `mcp/server.py` |
-| UC-06 | `document.py` | `configure_codex.py` | `codex_snippet_writer.py` | `cli/configure.py` |
+| UC-06 | `document.py` | `configure_grok.py` | `grok_snippet_writer.py` | `cli/configure.py` |
 
 ### Port & Adapter
 
@@ -209,7 +209,7 @@
 | `TabularExtractor` | `CalamineTabularExtractor` | UC-04 | polars/fastexcel. 프로파일 JSON 포함. Docling XLSX 백엔드 아님 |
 | `TableStore` | `MariaDbTableStore` | UC-04, UC-05 | `127.0.0.1:3306`. 단위 테스트 더블만 DuckDB/in-memory |
 | `McpServer` | `StdioMcpServer` | UC-05 | 조회 전용 |
-| `CodexConfigExporter` | `TomlSnippetWriter` | UC-06 | 홈 설정 파일을 덮지 않음 |
+| `GrokConfigExporter` | `TomlSnippetWriter` | UC-06 | `~/.grok/config.toml`을 덮지 않음. Grok `[mcp_servers.*]` 스니펫 |
 
 단위 테스트는 위 Port의 가짜 구현(in-memory/fake)을 써도 된다. 통합 테스트는 표의 Adapter와 **이미 떠 있는** `01-stable` 컨테이너를 쓴다. 이 레포에서 compose로 인프라를 올리지 않는다. 포트가 닫혀 있으면 skip 마크로 명시.
 
@@ -224,7 +224,7 @@
 | 패키지 관리 | uv |
 | 입고 CLI | `uv run python -m large_files_embedding ingest <path>` |
 | MCP stdio | `uv run python -m large_files_embedding mcp` |
-| 설정 스니펫 | `uv run python -m large_files_embedding configure-codex` |
+| 설정 스니펫 | `uv run python -m large_files_embedding configure-grok` |
 | 스모크 | `uv run python -m large_files_embedding health` |
 | 앱 중지 | `./scripts/stop.sh` |
 
@@ -267,7 +267,7 @@ curl -fsS http://127.0.0.1:11434/api/tags        # ollama. 목록에 qwen3-embed
 | UC-03 | `tests/unit/large_files_embedding/test_ingest_narrative.py` | `tests/integration/large_files_embedding/test_ingest_narrative.py` | 마크다운 dump만 있는 청크는 거부. PPTX는 슬라이드 단위(노트 포함). 고정 길이 청크 거부 |
 | UC-04 | `tests/unit/large_files_embedding/test_ingest_tabular.py` | `tests/integration/large_files_embedding/test_ingest_tabular.py` | xlsx 행 임베딩 요청은 도메인 예외. 원인/대책 칸 삭제는 거부 |
 | UC-05 | `tests/unit/large_files_embedding/test_serve_mcp.py` | `tests/integration/large_files_embedding/test_serve_mcp.py` | query_tables에 DROP이 있으면 거부한다. 필터 인자 존재 |
-| UC-06 | `tests/unit/large_files_embedding/test_configure_codex.py` | `tests/integration/large_files_embedding/test_configure_codex.py` | 빈 command면 예외. 홈 config.toml을 건드리지 않는다 |
+| UC-06 | `tests/unit/large_files_embedding/test_configure_grok.py` | `tests/integration/large_files_embedding/test_configure_grok.py` | 빈 command면 예외. `~/.grok/config.toml`을 건드리지 않는다 |
 
 순서: Red → Green → Refactor. 세부 규칙: `.grok/rules/testing.md`.
 
@@ -283,7 +283,7 @@ curl -fsS http://127.0.0.1:11434/api/tags        # ollama. 목록에 qwen3-embed
 | 3 | UC-03 | 서술 입고 (Docling JSON, 가족별 청크, 임베딩, Milvus) | DOCX 섹션 / PDF OCR 분기 / PPTX 슬라이드+노트 각각 검증. contextualize. 더미 벡터 없음 |
 | 4 | UC-04 | 표 입고 (calamine, 프로파일 JSON, Parquet 1층→MinIO, MariaDB 2층) | Milvus에 행이 없음. 1층 원본 컬럼. 차트시트 스킵. 스냅샷 UNION 없음 |
 | 5 | UC-05 | MCP 조회 서버 (필수 도구 전부) | 쓰기 SQL 거부. 인용 필드 존재 |
-| 6 | UC-06 | Codex toml 스니펫 | 홈 파일을 수정하지 않음. `uv run ruff format --check && uv run ruff check && uv run mypy src && uv run pytest` 통과 |
+| 6 | UC-06 | Grok `[mcp_servers.*]` 스니펫 | `~/.grok/config.toml`을 수정하지 않음. `uv run ruff format --check && uv run ruff check && uv run mypy src && uv run pytest` 통과 |
 
 `/implement-uc`는 UC 안에서 domain → application → infrastructure → presentation 순서를 지킨다. PLAN Phase를 UC당 3줄로 쪼개지 않는다.
 
@@ -362,3 +362,4 @@ coder는 이 파일의 Port/Adapter 표를 따른다. `InMemory*`는 테스트 �
 | 2026-09-05 | 0.5 | survey 재대조: UC-04 제목 MariaDB, 프로파일 JSON·1층 원본 컬럼, contextualize, 헤더/푸터, RTF/한 열 CSV 실패 큐, antiword/xlrd/Docling XLSX 금지, PPTX 노트, TAG | `draft` |
 | 2026-09-05 | 0.5 | 사용자 승인. UC 구현·`/scaffold` 허용 | `approved` |
 | 2026-09-05 | 0.5 | dense 임베딩: 호스트 Ollama `qwen3-embedding:4b` (dim 2560, Milvus). MariaDB VECTOR 저장 금지는 유지 | `approved` |
+| 2026-09-05 | 0.5 | MCP 클라이언트: Codex CLI → Grok. UC-06은 `[mcp_servers.*]` 스니펫, `~/.grok/config.toml` 미수정 | `approved` |

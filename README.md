@@ -1,6 +1,6 @@
 # large-files-embedding
 
-시장품질 문서(PDF/DOCX/DOC/XLSX/XLS/CSV/PPTX/PPT)를 입고하고 Codex CLI MCP로 조회하는 로컬 서비스
+시장품질 문서(PDF/DOCX/DOC/XLSX/XLS/CSV/PPTX/PPT)를 입고하고 Grok MCP로 조회하는 로컬 서비스
 
 | 항목 | 값 |
 |------|-----|

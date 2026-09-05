@@ -1,7 +1,7 @@
 [project]
 name = "large-files-embedding"
 version = "0.1.0"
-description = "시장품질 문서(PDF/DOCX/DOC/XLSX/XLS/CSV/PPTX/PPT)를 입고하고 Codex CLI MCP로 조회하는 로컬 서비스"
+description = "시장품질 문서(PDF/DOCX/DOC/XLSX/XLS/CSV/PPTX/PPT)를 입고하고 Grok MCP로 조회하는 로컬 서비스"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
