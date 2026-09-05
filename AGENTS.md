@@ -73,15 +73,29 @@
 
 - PLAN approved 전 domain/ 신규 코드 금지
 - 커밋 전 ruff + mypy + pytest
-- survey/ 는 조사 산출물이며 앱 소스와 섞지 말 것
-- 표 가족(C) 행을 벡터 컬렉션에 넣지 말 것
-- MCP는 조회만, 입고는 CLI 워커
-- 조사 문서: survey/format-pipelines/01-pdf.md … 08-ppt.md, survey/market-quality-rag-improvement.md
+- `survey/` 는 조사 산출물이며 앱 소스와 섞지 말 것. 포맷 SSOT: `survey/format-pipelines/README.md` + `01`–`08`. 상위: `survey/market-quality-rag-improvement.md`, `survey/excel-to-sql-decision.md`, `survey/xlsx-20-samples-layer1.md`, `survey/docx-pipeline.md`, `survey/doc-format-handling.md`
+- 09+ (HWP, MD/TXT/HTML, 메일, CAD 등 가족 E/F/G/H)는 PLAN 밖. 라우터에 없으면 실패 큐. `search_hwp` 같은 포맷별 MCP 도구 금지
+- MCP는 조회만, 입고는 CLI. `search` 하나만 두지 말 것. 숫자→`query_tables`(TAG), 대책/원인→`get_section`, 품번/코드→`search_passages`(sparse+필터)
+- 도구 인자 `product`/`period`/`doc_type`. 모델이 자연어에서만 뽑게 두지 말 것
+- 응답에 파일명+페이지/시트/섹션. 근거 없으면 “근거 없음”. 표 숫자를 서술 청크에서 지어내지 말 것
+- VBA/매크로 실행 금지. 실패 파일은 빈 문서로 인덱싱하지 말 것
+- 임베딩 입력은 `chunk.text`가 아니라 `chunker.contextualize(chunk)`. 고정 길이 슬라이딩 윈도우·마크다운 dump 인덱스 금지
+- 반복 헤더/푸터는 메타. 본문 청크에 매 페이지 반복 금지
+- soffice는 timeout + 파일별 `UserInstallation`. 동시 실행 제한. 원본 삭제 금지. antiword/catdoc/catppt 금지
 - **인프라는 이 레포 compose가 아니다.** `~/dev/00.workspace/01-stable/{local-mariadb,local-milvus,local-minio}` (OrbStack/`orbctl`). 끄면 다른 프로젝트도 멈춘다
 - Milvus 컬렉션은 `market_quality_chunks_hybrid`만. `psychology_chunks_hybrid` / `ebook_chunks_hybrid`에 쓰지 말 것
 - MinIO 버킷은 `market-quality-docs`. `psychology-pdfs` / `ebook-pdfs` 및 Milvus 내부 MinIO와 합치지 말 것
 - MariaDB는 표 2층만. `embeddings.chunks` VECTOR에 서술 청크를 넣지 말 것 (벡터는 Milvus)
 - 시크릿은 `01-stable` `.env`에서 읽고 이 레포에 커밋하지 말 것
+
+### 가족별 (01–08)
+
+| 가족 | 하라 | 하지 말 것 |
+|------|------|------------|
+| A Word | SimplePipeline JSON, HybridChunker `contextualize`+`repeat_table_header`, parent-child, 표는 `chunk_type=table` | DOCX→PDF, python-docx로 `.doc`, 표를 본문에 섞기 |
+| B PDF | StandardPdfPipeline, RapidOCR `lang=["korean"]`, 페이지 스트림, 차트 추출은 선택 | 마크다운 dump, lang `chinese`, 통째 메모리, PDF→DOCX, VLM으로 디지털 전체 대체 |
+| C 표 | calamine/polars 스트리밍 → 프로파일 JSON + Parquet 1층(원본 컬럼) → MariaDB 팩트. `.xls`는 calamine 1순위 | 행 임베딩, 시트 1:1 테이블, Docling XLSX/CSV 백엔드, openpyxl/pandas 전체 로드, xlrd, 월보를 period 없이 UNION, 원인/대책 칸 삭제, 100MB를 LLM 컨텍스트에 |
+| D 슬라이드 | 1장=1청크(제목+본문+노트), 표는 table 객체 | PPTX→PDF, 전 슬라이드 blob, HybridChunker로 슬라이드 쪼개기, python-pptx로 `.ppt` |
 
 ### 멀티에이전트 (`/implement-uc`)
 
