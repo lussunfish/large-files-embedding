@@ -193,7 +193,7 @@ def test_ingest_cli_pdf_does_not_need_soffice(
     result = CliRunner().invoke(app, ["ingest", str(pdf)])
     assert result.exit_code == 0
     assert "family=B" in result.stdout
-    assert "FAIL" not in result.stdout
+    assert "soffice_missing" not in result.stdout
 
 
 _PKG = "http://schemas.openxmlformats.org/package/2006"

@@ -5,7 +5,11 @@ description = "시장품질 문서(PDF/DOCX/DOC/XLSX/XLS/CSV/PPTX/PPT)를 입고
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "typer>=0.15"
+    "typer>=0.15",
+    "docling[rapidocr]>=2.0",
+    "pymilvus>=2.5",
+    "httpx>=0.27",
+    "minio>=7.2",
 ]
 
 [dependency-groups]
@@ -38,5 +42,20 @@ files = ["src"]
 strict = false
 
 [[tool.mypy.overrides]]
-module = ["uvicorn", "uvicorn.*"]
+module = [
+    "uvicorn",
+    "uvicorn.*",
+    "docling",
+    "docling.*",
+    "docling_core",
+    "docling_core.*",
+    "pymilvus",
+    "pymilvus.*",
+    "minio",
+    "minio.*",
+    "pptx",
+    "pptx.*",
+    "pypdfium2",
+    "pypdfium2.*",
+]
 ignore_missing_imports = true
