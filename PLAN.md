@@ -103,7 +103,7 @@
 | UC-03 | PDF/DOCX/PPTX를 Docling JSON·HybridChunker로 청크해 Milvus에 넣는다 | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_ingest_narrative.py` |
 | UC-04 | XLSX/XLS/CSV를 calamine/polars로 Parquet 1층·MariaDB 2층에 넣는다 (행 임베딩 금지) | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_ingest_tabular.py` |
 | UC-05 | MCP 조회 도구(search_passages, get_section, query_tables 등)를 제공한다 | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_serve_mcp.py` |
-| UC-06 | Grok용 stdio MCP config.toml 스니펫을 생성한다 | BC-01 | P0 | `planned` | `tests/unit/large_files_embedding/test_configure_grok.py` |
+| UC-06 | Grok용 stdio MCP config.toml 스니펫을 생성한다 | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_configure_grok.py` |
 
 상태: `planned` · `in_progress` · `done` · `deferred` · `cancelled`
 
@@ -291,15 +291,15 @@ curl -fsS http://127.0.0.1:11434/api/tags        # ollama. 목록에 qwen3-embed
 
 ## Definition of Done (UC)
 
-- [ ] UC 상태 `done`
-- [ ] 단위·통합 테스트 Green
-- [ ] `uv run ruff format --check && uv run ruff check && uv run mypy src && uv run pytest` 통과
-- [ ] PLAN 레이어 배치·Port 표와 구현 경로가 일치
-- [ ] C 가족 행이 `ChunkStore`에 없음 (UC-04, UC-05). 카탈로그 설명 청크만 허용. 1층 원본 컬럼 유지
-- [ ] 서술 청크는 `contextualize`. 고정 길이 dump·마크다운-only 인덱스 없음
-- [ ] MCP 응답에 파일명+위치. 근거 없으면 없다고 답함. 표 숫자를 서술에서 지어내지 않음
-- [ ] `/implement-uc` reviewer **bug 0**
-- [ ] `/implement-uc` security-reviewer **bug 0** — presentation이 끝나는 UC: CLI는 UC-06, MCP는 UC-05 (`--effort` ≥ 2). `--effort 1`은 security 생략
+- [x] UC 상태 `done`
+- [x] 단위·통합 테스트 Green
+- [x] `uv run ruff format --check && uv run ruff check && uv run mypy src && uv run pytest` 통과
+- [x] PLAN 레이어 배치·Port 표와 구현 경로가 일치
+- [x] C 가족 행이 `ChunkStore`에 없음 (UC-04, UC-05). 카탈로그 설명 청크만 허용. 1층 원본 컬럼 유지
+- [x] 서술 청크는 `contextualize`. 고정 길이 dump·마크다운-only 인덱스 없음
+- [x] MCP 응답에 파일명+위치. 근거 없으면 없다고 답함. 표 숫자를 서술에서 지어내지 않음
+- [x] `/implement-uc` reviewer **bug 0**
+- [x] `/implement-uc` security-reviewer **bug 0** — presentation이 끝나는 UC: CLI는 UC-06, MCP는 UC-05 (`--effort` ≥ 2). `--effort 1`은 security 생략
 
 ---
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -80,6 +81,9 @@ class FailureReason(StrEnum):
     SQL_NOT_ALLOWED = "sql_not_allowed"
     UNKNOWN_MCP_TOOL = "unknown_mcp_tool"
     QUERY_FAILED = "query_failed"
+    EMPTY_MCP_COMMAND = "empty_mcp_command"
+    PROTECTED_GROK_PATH = "protected_grok_path"
+    STARTUP_TIMEOUT_TOO_SHORT = "startup_timeout_too_short"
 
 
 CALAMINE_ENGINE = "calamine"
@@ -1319,3 +1323,123 @@ def _reject_sql_table(schema: str, table: str) -> None:
         raise McpQueryError(FailureReason.XLSX_BLOB, table)
     if table not in ALLOWED_FACT_TABLES and table_l not in ALLOWED_FACT_TABLES:
         raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, table)
+
+
+DEFAULT_MCP_SERVER_NAME = "market-quality"
+DEFAULT_MCP_COMMAND = "uv"
+DEFAULT_MCP_ARGS = ("run", "python", "-m", "large_files_embedding", "mcp")
+DEFAULT_STARTUP_TIMEOUT_SEC = 30
+DEFAULT_TOOL_TIMEOUT_SEC = 60
+MIN_STARTUP_TIMEOUT_SEC = 30
+PROTECTED_GROK_CHILDREN = frozenset({"skills", "agents", "roles"})
+_MCP_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+class GrokConfigError(Exception):
+    def __init__(self, reason: FailureReason, message: str | None = None) -> None:
+        self.reason = reason
+        super().__init__(message or reason.value)
+
+
+@dataclass(frozen=True)
+class GrokMcpSnippet:
+    server_name: str
+    command: str
+    args: tuple[str, ...]
+    cwd: str
+    enabled: bool
+    startup_timeout_sec: int
+    tool_timeout_sec: int
+
+    def __post_init__(self) -> None:
+        require_mcp_server_name(self.server_name)
+        require_mcp_command(self.command)
+        require_startup_timeout(self.startup_timeout_sec)
+
+
+class GrokConfigExporter(Protocol):
+    def export(self, snippet: GrokMcpSnippet, destination: Path) -> Path:
+        """Write a Grok [mcp_servers.*] snippet. Must not touch home config."""
+        ...
+
+
+def require_mcp_command(command: str) -> str:
+    if not isinstance(command, str) or not command.strip():
+        raise GrokConfigError(FailureReason.EMPTY_MCP_COMMAND)
+    return command.strip()
+
+
+def require_mcp_server_name(name: str) -> str:
+    text = name.strip()
+    if not _MCP_SERVER_NAME_RE.fullmatch(text):
+        raise GrokConfigError(FailureReason.EMPTY_MCP_COMMAND, name)
+    return text
+
+
+def require_startup_timeout(seconds: int) -> int:
+    value = int(seconds)
+    if value < MIN_STARTUP_TIMEOUT_SEC:
+        raise GrokConfigError(FailureReason.STARTUP_TIMEOUT_TOO_SHORT)
+    return value
+
+
+def require_export_destination(path: Path, *, home: Path | None = None) -> Path:
+    if is_protected_grok_destination(path, home=home):
+        raise GrokConfigError(FailureReason.PROTECTED_GROK_PATH, str(path))
+    return path
+
+
+def is_protected_grok_destination(path: Path, *, home: Path | None = None) -> bool:
+    home_root = home if home is not None else Path.home()
+    forbidden = _path_variants(
+        home_root / ".grok" / "config.toml",
+        home_root / ".codex" / "config.toml",
+    )
+    forbidden_keys = {_normcase_key(item) for item in forbidden}
+    for candidate in _path_variants(path):
+        if _has_protected_grok_child(candidate):
+            return True
+        if _normcase_key(candidate) in forbidden_keys:
+            return True
+        if any(_is_same_file(candidate, item) for item in forbidden):
+            return True
+    return False
+
+
+def _path_variants(*paths: Path) -> set[Path]:
+    variants: set[Path] = set()
+    for path in paths:
+        variants.add(path)
+        expanded = path.expanduser()
+        variants.add(expanded)
+        try:
+            variants.add(expanded.resolve())
+        except OSError:
+            pass
+    return variants
+
+
+def _normcase_key(path: Path) -> str:
+    return os.path.normcase(os.fspath(path)).casefold()
+
+
+def _normcase_part(part: str) -> str:
+    return os.path.normcase(part).casefold()
+
+
+def _is_same_file(left: Path, right: Path) -> bool:
+    try:
+        return left.exists() and right.exists() and left.samefile(right)
+    except OSError:
+        return False
+
+
+def _has_protected_grok_child(path: Path) -> bool:
+    grok = _normcase_part(".grok")
+    protected = {_normcase_part(name) for name in PROTECTED_GROK_CHILDREN}
+    parts = path.parts
+    for index, part in enumerate(parts):
+        if _normcase_part(part) == grok and index + 1 < len(parts):
+            if _normcase_part(parts[index + 1]) in protected:
+                return True
+    return False

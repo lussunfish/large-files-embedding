@@ -1,9 +1,11 @@
 import typer
 
+from large_files_embedding.presentation.cli.configure import configure_grok
 from large_files_embedding.presentation.cli.ingest import ingest
 
 app = typer.Typer(no_args_is_help=True)
 app.command()(ingest)
+app.command("configure-grok")(configure_grok)
 
 
 @app.callback()
