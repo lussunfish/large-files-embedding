@@ -427,6 +427,21 @@ def test_tables_mixed_into_prose_are_rejected() -> None:
     assert encoder.texts == []
 
 
+def test_code_listing_with_pipes_and_dashes_is_not_mixed_table_prose() -> None:
+    from large_files_embedding.domain.document import _mixed_table_prose
+
+    listing = (
+        "Recall the final state of the files foo and bar.\n"
+        "```\n"
+        "$ ls -l foo bar -rw-------   sar 0 Dec  : bar\n"
+        "```\n"
+        "The program shown in Figure . modifies the mode of these two files.\n"
+        "cmd | grep foo\n"
+        "------\n"
+    )
+    assert _mixed_table_prose(listing) is False
+
+
 def test_docx_keeps_section_path_parent_child_and_separate_tables() -> None:
     text_chunk = _chunk(
         chunk_id="t1",

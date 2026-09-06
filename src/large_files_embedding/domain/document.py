@@ -502,10 +502,16 @@ def _validate_chunk(chunk: NarrativeChunk) -> None:
         raise NarrativeIngestError(FailureReason.MIXED_TABLE_PROSE)
 
 
+_MD_TABLE_SEPARATOR = re.compile(
+    r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$",
+    re.MULTILINE,
+)
+
+
 def _mixed_table_prose(text: str) -> bool:
-    has_pipe_table = "|" in text and "---" in text
-    has_sentence = any(marker in text for marker in (". ", "。", "다."))
-    return has_pipe_table and has_sentence
+    if _MD_TABLE_SEPARATOR.search(text) is None:
+        return False
+    return any(marker in text for marker in (". ", "。", "다."))
 
 
 def clip_varchar(value: str | None, max_length: int) -> str:
