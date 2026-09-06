@@ -1,0 +1,6 @@
+=== 2026-09-07T00:55:21+09:00 sample-input/pdf/08-The Secret Life of Programs.pdf ===
+sample-input/pdf/08-The Secret Life of Programs.pdf family=B format=pdf normalize=false
+Loading weights:   0%|          | 0/770 [00:00<?, ?it/s]Loading weights: 100%|██████████| 770/770 [00:00<00:00, 27284.52it/s]
+2026-09-07 00:55:32,987 MatchingPostProcessor WARNING  Orphan pdf_cell 263 recovered to col=1 by nearest-column fallback (row=1, x=409.6, dist=149.2)
+sample-input/pdf/08-The Secret Life of Programs.pdf chunks=478 collection=market_quality_chunks_hybrid json=cb038fc1a4f799e2/docling.json
+=== end 2026-09-07T00:58:34+09:00 ===
