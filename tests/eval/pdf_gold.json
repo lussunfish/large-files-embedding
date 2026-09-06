@@ -1,0 +1,107 @@
+{
+  "notes": "Short gold: filename hit + keyword. no_evidence omitted until hybrid search has a score cutoff.",
+  "documents": [
+    {"filename_substr": "Advanced Programming in the UNIX Environment"},
+    {"filename_substr": "Effective awk Programming"},
+    {"filename_substr": "JavaScript Data Structures and Algorithms"},
+    {"filename_substr": "Microservices for the Enterprise"},
+    {"filename_substr": "Network Warrior"},
+    {"filename_substr": "The Debian System"},
+    {"filename_substr": "The Linux Programmer-s Toolbox"},
+    {"filename_substr": "The Secret Life of Programs"},
+    {"filename_substr": "Understanding ECMAScript 6"},
+    {"filename_substr": "PGP - GPG.pdf"}
+  ],
+  "cases": [
+    {
+      "id": "apue-umask",
+      "tool": "search_passages",
+      "query": "umask foo bar file mode",
+      "expect": {
+        "filename_substr": "Advanced Programming in the UNIX Environment",
+        "must_contain": ["umask"]
+      }
+    },
+    {
+      "id": "awk-pattern",
+      "tool": "search_passages",
+      "query": "awk pattern action programming",
+      "expect": {
+        "filename_substr": "Effective awk Programming",
+        "must_contain": ["awk"]
+      }
+    },
+    {
+      "id": "js-dsa",
+      "tool": "search_passages",
+      "query": "JavaScript data structures and algorithms",
+      "expect": {
+        "filename_substr": "JavaScript Data Structures and Algorithms",
+        "must_contain": ["JavaScript"]
+      }
+    },
+    {
+      "id": "microservices",
+      "tool": "search_passages",
+      "query": "microservices for the enterprise",
+      "expect": {
+        "filename_substr": "Microservices for the Enterprise",
+        "must_contain": ["microservice"]
+      }
+    },
+    {
+      "id": "network-warrior",
+      "tool": "search_passages",
+      "query": "Network Warrior",
+      "expect": {
+        "filename_substr": "Network Warrior",
+        "must_contain": ["Network"]
+      }
+    },
+    {
+      "id": "debian-apt",
+      "tool": "search_passages",
+      "query": "Debian apt dpkg package",
+      "expect": {
+        "filename_substr": "The Debian System",
+        "must_contain": ["Debian"]
+      }
+    },
+    {
+      "id": "linux-toolbox",
+      "tool": "search_passages",
+      "query": "Linux Programmer's Toolbox",
+      "expect": {
+        "filename_substr": "The Linux Programmer-s Toolbox",
+        "must_contain": ["Linux"]
+      }
+    },
+    {
+      "id": "secret-life",
+      "tool": "search_passages",
+      "query": "Secret Life of Programs",
+      "expect": {
+        "filename_substr": "The Secret Life of Programs",
+        "must_contain": ["Program"]
+      }
+    },
+    {
+      "id": "es6",
+      "tool": "search_passages",
+      "query": "Understanding ECMAScript 6",
+      "expect": {
+        "filename_substr": "Understanding ECMAScript 6",
+        "must_contain": ["ECMAScript"]
+      }
+    },
+    {
+      "id": "pgp-gpg",
+      "tool": "search_passages",
+      "query": "PGP GPG email practical paranoid",
+      "expect": {
+        "filename_substr": "PGP - GPG.pdf",
+        "must_contain": ["PGP"]
+      }
+    }
+  ]
+}
