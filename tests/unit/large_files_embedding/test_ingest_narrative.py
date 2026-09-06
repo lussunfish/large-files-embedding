@@ -634,3 +634,67 @@ def test_require_nonzero_embedding_rejects_zeros() -> None:
     with pytest.raises(NarrativeIngestError) as exc:
         require_nonzero_embedding(zeros)
     assert exc.value.reason is FailureReason.DUMMY_VECTOR
+
+
+class _FakeEmbedResponse:
+    def __init__(self, embeddings: list[list[float]]) -> None:
+        self.status_code = 200
+        self._embeddings = embeddings
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, list[list[float]]]:
+        return {"embeddings": self._embeddings}
+
+
+class _FakeEmbedClient:
+    def __init__(self, dim: int = DEFAULT_EMBEDDING_DIM) -> None:
+        self.dim = dim
+        self.payloads: list[list[str]] = []
+
+    def post(self, url: str, json: dict[str, object]) -> _FakeEmbedResponse:
+        raw = json.get("input", [])
+        texts = [str(item) for item in raw] if isinstance(raw, list) else []
+        self.payloads.append(texts)
+        vector = [0.01] * self.dim
+        return _FakeEmbedResponse([vector for _ in texts])
+
+
+def test_encoder_batches_large_inputs() -> None:
+    from large_files_embedding.infrastructure.embedding_encoder import (
+        DenseSparseEncoder,
+    )
+
+    client = _FakeEmbedClient()
+    encoder = DenseSparseEncoder(
+        "http://127.0.0.1:11434",
+        "qwen3-embedding:4b",
+        DEFAULT_EMBEDDING_DIM,
+        client=client,
+        batch_size=4,
+    )
+    texts = [f"chunk {index} token" for index in range(9)]
+    encoded = encoder.encode(texts)
+    assert len(encoded) == 9
+    assert [len(payload) for payload in client.payloads] == [4, 4, 1]
+    assert all(len(item.dense) == DEFAULT_EMBEDDING_DIM for item in encoded)
+
+
+def test_minio_from_env_does_not_leave_empty_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from large_files_embedding.infrastructure.minio_object_store import (
+        MinioObjectStore,
+    )
+
+    for key in (
+        "MINIO_ACCESS_KEY",
+        "MINIO_SECRET_KEY",
+        "MINIO_ROOT_USER",
+        "MINIO_ROOT_PASSWORD",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    store = MinioObjectStore.from_env()
+    assert store._access_key
+    assert store._secret_key

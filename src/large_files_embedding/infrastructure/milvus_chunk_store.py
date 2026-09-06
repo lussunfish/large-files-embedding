@@ -30,6 +30,7 @@ from large_files_embedding.domain.document import (
     require_milvus_uri,
 )
 
+_UPSERT_BATCH = 64
 _OUTPUT_FIELDS = (
     "chunk_id",
     "doc_id",
@@ -87,7 +88,11 @@ class MilvusChunkStore:
             for record in records
         ]
         try:
-            client.upsert(collection_name=self._collection, data=rows)
+            for start in range(0, len(rows), _UPSERT_BATCH):
+                client.upsert(
+                    collection_name=self._collection,
+                    data=rows[start : start + _UPSERT_BATCH],
+                )
             client.flush(self._collection)
             client.load_collection(self._collection)
         except Exception as exc:

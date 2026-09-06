@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 
 from large_files_embedding.domain.document import (
@@ -86,6 +87,11 @@ class IngestNarrative:
                 failure_reason=None,
             )
         except NarrativeIngestError as exc:
+            logging.getLogger(__name__).exception(
+                "narrative ingest failed (%s) for %s",
+                exc.reason.value,
+                document.path,
+            )
             return self._fail(document.path, exc.reason)
 
     def _fail(self, source: Path, reason: FailureReason) -> NarrativeIngestResult:

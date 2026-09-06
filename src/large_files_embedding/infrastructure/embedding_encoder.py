@@ -15,6 +15,9 @@ from large_files_embedding.domain.document import (
     require_nonzero_embedding,
 )
 
+_DEFAULT_BATCH_SIZE = 8
+_DEFAULT_TIMEOUT_SEC = 180.0
+
 
 class DenseSparseEncoder:
     def __init__(
@@ -24,18 +27,29 @@ class DenseSparseEncoder:
         dim: int,
         *,
         client: httpx.Client | None = None,
+        batch_size: int = _DEFAULT_BATCH_SIZE,
+        timeout: float = _DEFAULT_TIMEOUT_SEC,
     ) -> None:
         self._host = host.rstrip("/")
         self._model = model
         self._dim = dim
-        self._client = client or httpx.Client(timeout=120.0)
+        self._batch_size = max(1, batch_size)
+        self._client = client or httpx.Client(timeout=timeout)
 
     @classmethod
     def from_env(cls) -> DenseSparseEncoder:
         host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
         model = os.environ.get("EMBEDDING_MODEL", "qwen3-embedding:4b")
         dim = int(os.environ.get("EMBEDDING_DIM", "2560"))
-        return cls(host=host, model=model, dim=dim)
+        batch_size = int(
+            os.environ.get("EMBEDDING_BATCH_SIZE", str(_DEFAULT_BATCH_SIZE))
+        )
+        timeout = float(
+            os.environ.get("EMBEDDING_TIMEOUT_SEC", str(_DEFAULT_TIMEOUT_SEC))
+        )
+        return cls(
+            host=host, model=model, dim=dim, batch_size=batch_size, timeout=timeout
+        )
 
     def encode(self, texts: Sequence[str]) -> list[EncodedEmbedding]:
         if not texts:
@@ -53,6 +67,14 @@ class DenseSparseEncoder:
         return encoded
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self._batch_size):
+            vectors.extend(self._embed_batch(texts[start : start + self._batch_size]))
+        if len(vectors) != len(texts):
+            raise NarrativeIngestError(FailureReason.DUMMY_VECTOR)
+        return vectors
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         payload = {
             "model": self._model,
             "input": texts,

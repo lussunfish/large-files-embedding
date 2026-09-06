@@ -386,7 +386,7 @@ def test_cli_ingests_family_c_csv(
         "품번,차종,발생일,원인,대책,건수\nC-3,SUV,2024-02-01,누유,교체,2\n",
         encoding="utf-8",
     )
-    result = CliRunner().invoke(app, ["ingest", str(path)])
+    result = CliRunner().invoke(app, ["ingest", "--force", str(path)])
     assert result.exit_code == 0
     assert "family=C" in result.stdout
     assert "skip=tabular" not in result.stdout

@@ -1,5 +1,7 @@
-"""CLI adapter: route, normalize OLE, ingest narrative A/B/D and tabular C."""
+"""CLI adapter: route, skip unchanged, normalize OLE, ingest A/B/C/D."""
 
+import logging
+import traceback
 from pathlib import Path
 
 import typer
@@ -8,6 +10,10 @@ from large_files_embedding.application.ingest_narrative import IngestNarrative
 from large_files_embedding.application.ingest_tabular import IngestTabular
 from large_files_embedding.application.normalize_office import NormalizeOffice
 from large_files_embedding.application.route_file import RouteFile
+from large_files_embedding.application.skip_unchanged_ingest import (
+    SkipIngestResult,
+    SkipUnchangedIngest,
+)
 from large_files_embedding.domain.document import (
     Document,
     DocumentFamily,
@@ -25,18 +31,25 @@ from large_files_embedding.infrastructure.format_detector import MagicFormatDete
 from large_files_embedding.infrastructure.libreoffice_normalizer import (
     LibreOfficeNormalizer,
 )
+from large_files_embedding.infrastructure.mariadb_manifest_store import (
+    MariaDbManifestStore,
+)
 from large_files_embedding.infrastructure.mariadb_table_store import MariaDbTableStore
 from large_files_embedding.infrastructure.milvus_chunk_store import MilvusChunkStore
 from large_files_embedding.infrastructure.minio_object_store import MinioObjectStore
 
 
-def ingest(path: Path) -> None:
-    """Route by signature, normalize OLE, ingest narrative A/B/D and tabular C."""
+def ingest(
+    path: Path,
+    force: bool = typer.Option(False, "--force"),
+) -> None:
+    """Route by signature, skip unchanged bytes, ingest narrative or tabular."""
     router = RouteFile(MagicFormatDetector())
     office = NormalizeOffice(LibreOfficeNormalizer())
     narrative: IngestNarrative | None = None
     tabular: IngestTabular | None = None
     objects: MinioObjectStore | None = None
+    skipper: SkipUnchangedIngest | None = None
 
     def get_objects() -> MinioObjectStore:
         nonlocal objects
@@ -66,46 +79,103 @@ def ingest(path: Path) -> None:
             )
         return tabular
 
+    def get_skipper() -> SkipUnchangedIngest:
+        nonlocal skipper
+        if skipper is None:
+            skipper = SkipUnchangedIngest(MariaDbManifestStore.from_env())
+        return skipper
+
     for document in router.execute_many(_expand(path)):
-        ingest_path = document.path
-        if document.decision is not None and document.decision.needs_normalization:
-            result = office.execute(document)
-            typer.echo(_format_normalization(document, result))
-            if result.failed or result.derived_path is None:
-                continue
-            ingest_path = result.derived_path
-        else:
+        if document.decision is None:
             typer.echo(_format_line(document))
-            if document.decision is None:
-                continue
-        if document.decision.family is DocumentFamily.C:
-            try:
-                tresult = get_tabular().execute(document, ingest_path=ingest_path)
-            except Exception:
-                tresult = TabularIngestResult(
-                    document.path,
-                    None,
-                    0,
-                    None,
-                    (),
-                    None,
-                    0,
-                    FailureReason.EXTRACT_FAILED,
-                )
-            typer.echo(_format_tabular(document, tresult))
             continue
+        if not document.decision.needs_normalization:
+            typer.echo(_format_line(document))
+
+        def run_ingest(
+            current: Document,
+        ) -> NarrativeIngestResult | TabularIngestResult:
+            ingest_path = current.path
+            decision = current.decision
+            assert decision is not None
+            if decision.needs_normalization:
+                result = office.execute(current)
+                typer.echo(_format_normalization(current, result))
+                if result.failed or result.derived_path is None:
+                    return NarrativeIngestResult(
+                        current.path,
+                        None,
+                        0,
+                        None,
+                        None,
+                        result.failure_reason,
+                    )
+                ingest_path = result.derived_path
+            if decision.family is DocumentFamily.C:
+                try:
+                    return get_tabular().execute(current, ingest_path=ingest_path)
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "tabular ingest crashed for %s", current.path
+                    )
+                    typer.echo(traceback.format_exc(), err=True)
+                    return TabularIngestResult(
+                        current.path,
+                        None,
+                        0,
+                        None,
+                        (),
+                        None,
+                        0,
+                        FailureReason.EXTRACT_FAILED,
+                    )
+            try:
+                return get_narrative().execute(current, ingest_path=ingest_path)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "narrative ingest crashed for %s", current.path
+                )
+                typer.echo(traceback.format_exc(), err=True)
+                return NarrativeIngestResult(
+                    current.path,
+                    None,
+                    0,
+                    None,
+                    None,
+                    FailureReason.PARSE_FAILED,
+                )
+
         try:
-            nresult = get_narrative().execute(document, ingest_path=ingest_path)
+            outcome = get_skipper().execute(document, ingest=run_ingest, force=force)
         except Exception:
-            nresult = NarrativeIngestResult(
-                document.path,
-                None,
-                0,
-                None,
-                None,
-                FailureReason.PARSE_FAILED,
+            logging.getLogger(__name__).exception(
+                "skip/ingest crashed for %s", document.path
             )
-        typer.echo(_format_narrative(document, nresult))
+            typer.echo(traceback.format_exc(), err=True)
+            reason = FailureReason.MANIFEST_LOOKUP_FAILED.value
+            typer.echo(f"{document.path} FAIL reason={reason}")
+            continue
+        if outcome.skipped:
+            typer.echo(_format_skip(document, outcome))
+            continue
+        ingested = outcome.ingest_result
+        write_failed = outcome.failed and ingested is not None and not ingested.failed
+        if ingested is None or write_failed:
+            reason = (
+                outcome.failure_reason.value
+                if outcome.failure_reason is not None
+                else FailureReason.MANIFEST_LOOKUP_FAILED.value
+            )
+            typer.echo(f"{document.path} FAIL reason={reason}")
+            continue
+        if document.decision.needs_normalization and ingested.failed:
+            continue
+        if document.decision.family is DocumentFamily.C:
+            assert isinstance(ingested, TabularIngestResult)
+            typer.echo(_format_tabular(document, ingested))
+            continue
+        assert isinstance(ingested, NarrativeIngestResult)
+        typer.echo(_format_narrative(document, ingested))
 
 
 def _expand(path: Path) -> list[Path]:
@@ -133,6 +203,11 @@ def _format_line(document: Document) -> str:
         f"{document.path} family={decision.family.value} "
         f"format={decision.detected_format.value} normalize={normalize}{engine}"
     )
+
+
+def _format_skip(document: Document, result: SkipIngestResult) -> str:
+    reason = result.skip_reason or "unchanged_content"
+    return f"{document.path} SKIP reason={reason} sha256={result.content_sha256}"
 
 
 def _format_normalization(document: Document, result: NormalizationResult) -> str:

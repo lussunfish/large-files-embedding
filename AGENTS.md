@@ -86,7 +86,7 @@
 - **인프라는 이 레포 compose가 아니다.** `~/dev/00.workspace/01-stable/{local-mariadb,local-milvus,local-minio}` (OrbStack/`orbctl`). 끄면 다른 프로젝트도 멈춘다
 - Milvus 컬렉션은 `market_quality_chunks_hybrid`만. `psychology_chunks_hybrid` / `ebook_chunks_hybrid`에 쓰지 말 것
 - MinIO 버킷은 `market-quality-docs`. `psychology-pdfs` / `ebook-pdfs` 및 Milvus 내부 MinIO와 합치지 말 것
-- MariaDB는 표 2층만. `embeddings.chunks` VECTOR에 서술 청크를 넣지 말 것 (벡터는 Milvus)
+- MariaDB는 표 2층(`claim_event` / `monthly_quality_kpi`)과 UC-07 입고 원장(`ingest_manifest`)만. `embeddings.chunks` VECTOR에 서술 청크를 넣지 말 것 (벡터는 Milvus). 내용 해시 스킵 인덱스를 MinIO에 두지 말 것
 - 서술 dense 임베딩은 호스트 **Ollama** `qwen3-embedding:4b` (`http://127.0.0.1:11434`). sentence-transformers로 BGE-M3를 기본 경로로 두지 말 것. 같은 모델이어도 MariaDB VECTOR에 서술 청크를 넣지 말 것
 - 시크릿은 `01-stable` `.env`에서 읽고 이 레포에 커밋하지 말 것
 

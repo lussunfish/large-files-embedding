@@ -32,12 +32,23 @@ class MinioObjectStore:
 
     @classmethod
     def from_env(cls) -> MinioObjectStore:
-        endpoint = os.environ.get("MINIO_ENDPOINT", "http://127.0.0.1:9000")
-        access_key = os.environ.get("MINIO_ACCESS_KEY") or os.environ.get(
-            "MINIO_ROOT_USER", ""
+        extras = _stable_minio_env()
+        endpoint = os.environ.get("MINIO_ENDPOINT") or extras.get(
+            "MINIO_ENDPOINT", "http://127.0.0.1:9000"
         )
-        secret_key = os.environ.get("MINIO_SECRET_KEY") or os.environ.get(
-            "MINIO_ROOT_PASSWORD", ""
+        access_key = (
+            os.environ.get("MINIO_ACCESS_KEY")
+            or os.environ.get("MINIO_ROOT_USER")
+            or extras.get("MINIO_ACCESS_KEY")
+            or extras.get("MINIO_ROOT_USER")
+            or "minioadmin"
+        )
+        secret_key = (
+            os.environ.get("MINIO_SECRET_KEY")
+            or os.environ.get("MINIO_ROOT_PASSWORD")
+            or extras.get("MINIO_SECRET_KEY")
+            or extras.get("MINIO_ROOT_PASSWORD")
+            or "minioadmin"
         )
         bucket = os.environ.get("MINIO_BUCKET", "market-quality-docs")
         return cls(endpoint, access_key, secret_key, bucket)
@@ -84,3 +95,31 @@ class MinioObjectStore:
             if not self._client.bucket_exists(self._bucket):
                 self._client.make_bucket(self._bucket)
         return self._client
+
+
+_STABLE_MINIO_KEYS = frozenset(
+    {
+        "MINIO_ENDPOINT",
+        "MINIO_ACCESS_KEY",
+        "MINIO_SECRET_KEY",
+        "MINIO_ROOT_USER",
+        "MINIO_ROOT_PASSWORD",
+    }
+)
+
+
+def _stable_minio_env() -> dict[str, str]:
+    path = Path.home() / "dev" / "00.workspace" / "01-stable" / "local-minio" / ".env"
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, raw = stripped.partition("=")
+        key = key.strip()
+        if key not in _STABLE_MINIO_KEYS:
+            continue
+        values[key] = raw.strip().strip("'").strip('"')
+    return values

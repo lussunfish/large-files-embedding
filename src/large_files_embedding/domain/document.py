@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -84,6 +85,9 @@ class FailureReason(StrEnum):
     EMPTY_MCP_COMMAND = "empty_mcp_command"
     PROTECTED_GROK_PATH = "protected_grok_path"
     STARTUP_TIMEOUT_TOO_SHORT = "startup_timeout_too_short"
+    MANIFEST_LOOKUP_FAILED = "manifest_lookup_failed"
+    MANIFEST_WRITE_FAILED = "manifest_write_failed"
+    CONTENT_HASH_FAILED = "content_hash_failed"
 
 
 CALAMINE_ENGINE = "calamine"
@@ -101,6 +105,10 @@ MARKET_QUALITY_BUCKET = "market-quality-docs"
 FORBIDDEN_BUCKETS = frozenset({"psychology-pdfs", "ebook-pdfs"})
 DEFAULT_EMBEDDING_DIM = 2560
 DEFAULT_EMBEDDING_MODEL = "qwen3-embedding:4b"
+DEFAULT_PIPELINE_VERSION = "1"
+HASH_CHUNK_SIZE = 1024 * 1024
+MANIFEST_STATUS_COMPLETE = "complete"
+SKIP_REASON_UNCHANGED = "unchanged_content"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 DEFAULT_MILVUS_URI = "http://127.0.0.1:19530"
 DEFAULT_MINIO_ENDPOINT = "http://127.0.0.1:9000"
@@ -708,6 +716,75 @@ class TableStore(Protocol):
     ) -> Sequence[Mapping[str, object]]:
         """Run allowlisted read-only SQL. Writes must be rejected."""
         ...
+
+
+class ManifestStoreError(Exception):
+    def __init__(self, reason: FailureReason, message: str | None = None) -> None:
+        self.reason = reason
+        super().__init__(message or reason.value)
+
+
+@dataclass(frozen=True)
+class IngestFingerprint:
+    content_sha256: str
+    encoder_model: str
+    pipeline_version: str
+
+
+@dataclass(frozen=True)
+class ManifestRecord:
+    fingerprint: IngestFingerprint
+    family: DocumentFamily
+    detected_format: DocumentFormat
+    byte_size: int
+    status: str
+    chunk_count: int
+    ingested_at: datetime
+
+
+class ManifestStore(Protocol):
+    def find(self, fingerprint: IngestFingerprint) -> ManifestRecord | None:
+        """Look up a content-hash skip row. Path is not part of the key."""
+        ...
+
+    def upsert(self, record: ManifestRecord) -> None:
+        """Write a successful ingest fingerprint. Do not store path aliases."""
+        ...
+
+
+def encoder_model_for_family(family: DocumentFamily, configured: str) -> str:
+    if family is DocumentFamily.C:
+        return ""
+    return configured
+
+
+def fingerprint_for(
+    family: DocumentFamily,
+    content_sha256: str,
+    *,
+    encoder_model: str,
+    pipeline_version: str,
+) -> IngestFingerprint:
+    return IngestFingerprint(
+        content_sha256=content_sha256,
+        encoder_model=encoder_model_for_family(family, encoder_model),
+        pipeline_version=pipeline_version,
+    )
+
+
+def hash_file_sha256(
+    path: Path, *, chunk_size: int = HASH_CHUNK_SIZE
+) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    total = 0
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(chunk_size)
+            if not block:
+                break
+            digest.update(block)
+            total += len(block)
+    return digest.hexdigest(), total
 
 
 def forbid_row_embedding(texts: Sequence[str]) -> None:

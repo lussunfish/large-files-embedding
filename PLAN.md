@@ -11,8 +11,9 @@
 |------|-----|
 | 상태 | `approved` |
 | 승인자 | sunfish |
-| 승인일 | 2026-09-05 |
-| 승인 범위 | v0.5 (UC-01~06, 포맷 01–08, 공유 `01-stable`) |
+| 승인일 | 2026-09-06 |
+| 승인 범위 | v0.6 (UC-01~07, 포맷 01–08, 공유 `01-stable`) |
+| 직전 승인 | v0.5, sunfish, 2026-09-05 (UC-01~06) |
 
 **상태**: `draft` · `approved` · `revised` (재승인 필요)
 
@@ -23,6 +24,7 @@
 - [x] 표는 프로파일 JSON + Parquet 1층, MariaDB 2층은 매핑된 팩트만
 - [x] 실행 모드·명령어 확인 (`01-stable` 공유 스택)
 - [x] Phase 완료 조건이 검증 가능 (어댑터가 인메모리가 아님)
+- [x] UC-07: 스킵은 **파일 바이트 SHA-256만** (경로 무관). 입고 원장 MariaDB `ingest_manifest`. `--force`. 경로·별칭은 스킵 키에 넣지 않음
 
 ---
 
@@ -31,6 +33,7 @@
 - 01–08 포맷을 시그니처 기준으로 라우팅해 서술 문서는 벡터, 표는 SQL로 입고한다
 - HybridChunker JSON 청크를 **공유 Milvus**(`127.0.0.1:19530`)에 넣고, 엑셀/CSV는 Parquet 랜딩 후 **MariaDB**로 조회한다
 - 원본·파생 객체는 **공유 MinIO**(`127.0.0.1:9000`) 버킷에 둔다
+- 같은 **파일 내용**(원본 SHA-256, 경로 무관)의 재입고는 Docling/Ollama/추출을 **스킵**한다. 성공 기록은 MariaDB 입고 원장
 - Grok(stdio MCP)에 연동해 담당자가 근거 있는 인사이트를 얻는다
 - Clean Architecture + TDD, 호스트 uv로 개발·실행
 
@@ -45,6 +48,9 @@
 - antiword/catdoc/catppt, python-docx로 `.doc`, python-pptx로 `.ppt`, xlrd
 - 이 레포에서 Milvus/MinIO/MariaDB compose를 새로 띄우기 (`01-stable` 공유 스택을 쓴다)
 - 공유 MariaDB의 `embeddings.chunks` VECTOR 테이블에 서술 청크를 넣기 (벡터는 Milvus)
+- 내용 해시로 `doc_id`를 바꾸기. 스킵 인덱스를 MinIO 객체 키/유저 메타만으로 구현하기
+- 스킵 키에 경로·파일명을 넣기. 경로 별칭으로 스킵을 분기하기
+- 실패한 입고·09+를 성공 해시로 남겨 재시도를 막기
 - 웹 UI, 클라우드 전용 파서·변환 API
 - 사용자 홈의 `~/.grok/config.toml`을 직접 덮어쓰기 (스니펫만 생성). `~/.codex/config.toml`도 건드리지 않음
 - ColQwen/ColPali 페이지 비전 인덱스 (후속)
@@ -59,6 +65,7 @@
 - UC-04: XLSX/XLS/CSV 표 입고 (calamine/polars, 프로파일 JSON, Parquet 1층→MinIO, 조회용 팩트는 MariaDB). 행 임베딩 금지
 - UC-05: MCP 조회 전용 도구 (목록은 UC-05 수용 기준)
 - UC-06: Grok용 stdio MCP `[mcp_servers.*]` **스니펫 생성** (홈 `~/.grok/config.toml` 미수정)
+- UC-07: 원본 **파일 바이트** SHA-256으로 재입고 스킵 (경로 무관, 가족 A/B/C/D). 원장은 MariaDB `ingest_manifest`. MinIO는 객체만
 
 ### 제외
 
@@ -87,6 +94,9 @@
 | 프로파일 JSON | 표 파일당 2~10KB 지문(시트·헤더·타입·샘플). LLM에는 이것만. 원본 워크북은 넣지 않음 | UC-04 |
 | 1층 / 2층 | 1층=Parquet 랜딩(원본 컬럼 유지). 2층=curated 팩트 SQL. 정규화는 2층만 | UC-04 |
 | 원장 | 한 행=사건 1건. UNION이 맞음 | UC-04 |
+| 입고 원장 | 성공한 입고 1건의 **파일 내용 해시**·지문. 테이블 `ingest_manifest`. 팩트 원장과 다름. 경로는 스킵에 쓰지 않음 | UC-07 |
+| 내용 해시 | 원본 **파일 바이트**의 SHA-256(hex 64자, 스트리밍). 경로·파일명은 입력에 넣지 않음. `.doc`/`.ppt`는 변환본이 아니라 원본 | UC-07 |
+| 입고 지문 | 스킵 키의 나머지. `encoder_model` + `pipeline_version`. 모델·청커가 바뀌면 스킵하지 않음. 경로 아님 | UC-07 |
 | 스냅샷 | 월보처럼 파일 단위 시점. `report_period` 없이 UNION 하면 중복 집계 | UC-04 |
 | TAG | Table-Augmented Generation. 숫자 질문은 RAG가 아니라 `query_tables` | UC-05 |
 | 실패 큐 | 파싱·변환 실패·미등록 포맷. 빈 문서로 인덱싱하지 않음. 배치는 계속 | UC-01~04 |
@@ -104,10 +114,11 @@
 | UC-04 | XLSX/XLS/CSV를 calamine/polars로 Parquet 1층·MariaDB 2층에 넣는다 (행 임베딩 금지) | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_ingest_tabular.py` |
 | UC-05 | MCP 조회 도구(search_passages, get_section, query_tables 등)를 제공한다 | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_serve_mcp.py` |
 | UC-06 | Grok용 stdio MCP config.toml 스니펫을 생성한다 | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_configure_grok.py` |
+| UC-07 | 파일 내용 해시가 같고 입고 지문이 같으면 재입고를 스킵한다 (경로 무관) | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_skip_unchanged_ingest.py` |
 
 상태: `planned` · `in_progress` · `done` · `deferred` · `cancelled`
 
-의존: UC-02는 라우팅 결과(정규화 대상)가 필요하다. UC-03/04는 UC-01 뒤에. UC-05는 UC-03·04가 저장한 인덱스를 읽는다. UC-06은 UC-05 엔트리포인트가 있어야 한다.
+의존: UC-02는 라우팅 결과(정규화 대상)가 필요하다. UC-03/04는 UC-01 뒤에. UC-05는 UC-03·04가 저장한 인덱스를 읽는다. UC-06은 UC-05 엔트리포인트가 있어야 한다. UC-07은 UC-01 라우팅 뒤, UC-02 정규화·UC-03/04 추출 **앞**에서 조회하고, 성공한 UC-03/04 **뒤**에 원장을 기록한다.
 
 ### UC 수용 기준 (Given/When/Then)
 
@@ -175,13 +186,28 @@
 - **Then**: 저장소 안 스니펫(예: `deploy/grok-mcp.toml`)이 나온다. Grok `[mcp_servers.market-quality]` 형식. 키: `command`, `args`, `cwd`, `enabled`, `startup_timeout_sec`(≥30), `tool_timeout_sec`. 예: `command = "uv"`, `args = ["run", "python", "-m", "large_files_embedding", "mcp"]`. **홈 `~/.grok/config.toml`을 수정하지 않는다.** 운영자가 프로젝트 `.grok/config.toml`에 붙이거나 `grok mcp add --scope project`로 넣는다
 - **실패/경계**: command가 비면 거부한다. 기존 `.grok/skills`·에이전트 설정을 덮지 않는다
 
+#### UC-07 — 파일 내용 해시가 같고 입고 지문이 같으면 재입고를 스킵한다 (경로 무관)
+
+- **Given**: 가족 A/B/C/D로 라우팅된 파일이 있다. 입고 원장 Port가 있다
+- **When**: `ingest <path>` (또는 디렉터리 배치)를 실행한다
+- **Then**:
+  - 라우팅 **성공 후**, soffice/Docling/calamine/Ollama **전에** 원본 **파일 바이트**를 SHA-256으로 스트리밍 해시한다 (통째 메모리 로드 금지). 경로·파일명·mtime은 해시 입력에 넣지 않는다. `.doc`/`.ppt`는 **원본 파일**을 해시하고 변환본을 해시하지 않는다
+  - **스킵 여부는 파일 해시만으로 결정한다.** 경로가 같든 다르든 보지 않는다. 스킵 키는 `(content_sha256, encoder_model, pipeline_version)` 이다. 경로·`doc_id`·파일명은 키에 없다. 서술(A/B/D)의 `encoder_model`은 `qwen3-embedding:4b`(설정값). 표(C)는 임베딩이 없으므로 `encoder_model`을 빈 문자열로 두고 `pipeline_version`만 쓴다
+  - 원장에 **성공** 행이 있고 키가 같으면 정규화·파싱·임베딩·추출·MinIO·Milvus·팩트 insert를 **하지 않는다**. 경로가 바뀌어도 같다. CLI는 `SKIP reason=unchanged_content` 와 `sha256`를 출력한다. 실패가 아니며 배치는 계속한다
+  - 키가 없으면(처음 보는 바이트이거나 지문이 다르면) 기존 UC-02/03/04를 실행한다. **성공한 뒤에만** 원장에 파일 해시를 기록한다. 실패·09+·미등록 포맷은 성공 해시를 남기지 않아 재시도가 막히지 않는다
+  - 경로 별칭을 만들지 않는다. 같은 바이트를 다른 경로로 넣어도 스킵만 하고 원장에 경로를 쌓지 않는다. 같은 경로에 다른 바이트가 오면 해시가 다르므로 다시 입고한다. 이전 해시 행을 경로 기준으로 폐기하지 않는다
+  - Milvus `doc_id`는 실제로 입고할 때만 기존처럼 절대 경로 해시로 만든다. 스킵 판단에는 쓰지 않는다
+  - `--force`는 스킵을 무시하고 다시 입고한다. 성공 후 같은 파일 해시 원장을 갱신한다. MCP에 입고·스킵·force 도구를 두지 않는다
+  - 원장은 MariaDB `market_quality.ingest_manifest` 다. `claim_event`/`monthly_quality_kpi`에 붙이지 않는다. MinIO 유저 메타·매니페스트 객체를 스킵 인덱스로 쓰지 않는다. `embeddings.chunks` VECTOR에 넣지 않는다
+- **실패/경계**: 원장 조회 실패는 스킵으로 숨기지 않고 입고를 실패로 남긴다(부분 성공 원장 없음). 빈 파일 해시도 계산하되 이후 파서가 빈 문서로 거절하면 원장을 쓰지 않는다. 파일 해시만 같고 지문(모델·파이프라인)이 다르면 스킵하지 않는다. 경로만 다르고 바이트가 같으면 반드시 스킵한다
+
 ---
 
 ## 아키텍처 설계
 
 도메인은 UC마다 쪼개지 않는다. `domain/document.py`에 가족·시그니처·청크/표 레코드 규칙을 둔다. 저장 Port는 역할별로 나눈다. **인메모리 어댑터는 단위 테스트 더블일 뿐, PLAN Infrastructure 열이 아니다.**
 
-입고는 `ingest(path) → detect → normalize → extract(narrative|tabular)` 레지스트리다. 09+ 추가는 핸들러 한 개이며 MCP 도구를 포맷마다 늘리지 않는다. 컨테이너(메일/zip)·가족 E(MD/TXT/HTML)는 이번 범위에서 실패 큐. 표 추출기는 프로파일 JSON을 같이 낸다(별도 Port 없음).
+입고는 `ingest(path) → detect → content_sha256 → 원장 조회 → (skip | normalize → extract(narrative|tabular) → 원장 기록)` 이다. 09+ 추가는 핸들러 한 개이며 MCP 도구를 포맷마다 늘리지 않는다. 컨테이너(메일/zip)·가족 E(MD/TXT/HTML)는 이번 범위에서 실패 큐. 표 추출기는 프로파일 JSON을 같이 낸다(별도 Port 없음). 입고 원장은 `TableStore`/`ObjectStore`에 끼워 넣지 않고 `ManifestStore` Port다.
 
 질문 유형과 도구: 코드/키워드 → `search_passages`(sparse+필터), 수치/집계 → `query_tables`(TAG), 원인·대책 → `get_section`, 차트 페이지 → `get_page`(비전 인덱스는 후속).
 
@@ -195,6 +221,7 @@
 | UC-04 | `document.py` | `ingest_tabular.py` | `calamine_extractor.py`, `mariadb_table_store.py`, `minio_object_store.py` | `cli/ingest.py` |
 | UC-05 | `document.py` | `serve_mcp.py` | `milvus_chunk_store.py`, `mariadb_table_store.py` (읽기) | `mcp/server.py` |
 | UC-06 | `document.py` | `configure_grok.py` | `grok_snippet_writer.py` | `cli/configure.py` |
+| UC-07 | `document.py` | `skip_unchanged_ingest.py` | `mariadb_manifest_store.py` | `cli/ingest.py` |
 
 ### Port & Adapter
 
@@ -210,8 +237,11 @@
 | `TableStore` | `MariaDbTableStore` | UC-04, UC-05 | `127.0.0.1:3306`. 단위 테스트 더블만 DuckDB/in-memory |
 | `McpServer` | `StdioMcpServer` | UC-05 | 조회 전용 |
 | `GrokConfigExporter` | `TomlSnippetWriter` | UC-06 | `~/.grok/config.toml`을 덮지 않음. Grok `[mcp_servers.*]` 스니펫 |
+| `ManifestStore` | `MariaDbManifestStore` | UC-07 | `market_quality.ingest_manifest`. 성공 행만 스킵. 팩트 테이블·MinIO 키 인덱스 아님 |
 
 단위 테스트는 위 Port의 가짜 구현(in-memory/fake)을 써도 된다. 통합 테스트는 표의 Adapter와 **이미 떠 있는** `01-stable` 컨테이너를 쓴다. 이 레포에서 compose로 인프라를 올리지 않는다. 포트가 닫혀 있으면 skip 마크로 명시.
+
+`ingest_manifest` 최소 컬럼(구현이 이 의미를 지키면 이름은 같아도 된다): `content_sha256`(CHAR 64), `encoder_model`, `pipeline_version`, `family`, `detected_format`, `byte_size`, `status`(`complete`만 스킵), `chunk_count`, `ingested_at`. PK는 `(content_sha256, encoder_model, pipeline_version)`. **경로·파일명·aliases 컬럼은 스킵 키도 조회 조건도 아니다.** 감사 로그로 넣더라도 스킵 분기에서 읽지 않는다.
 
 ---
 
@@ -222,7 +252,7 @@
 | RUNTIME_MODE | `uv-native` |
 | USE_GPU | `no` (PDF 레이아웃은 CPU. GPU는 후속) |
 | 패키지 관리 | uv |
-| 입고 CLI | `uv run python -m large_files_embedding ingest <path>` |
+| 입고 CLI | `uv run python -m large_files_embedding ingest <path>` (`--force` 는 UC-07 스킵 무시) |
 | MCP stdio | `uv run python -m large_files_embedding mcp` |
 | 설정 스니펫 | `uv run python -m large_files_embedding configure-grok` |
 | 스모크 | `uv run python -m large_files_embedding health` |
@@ -243,6 +273,7 @@
 | UC-03 | **Ollama** `qwen3-embedding:4b` | `OLLAMA_HOST=http://127.0.0.1:11434`, `EMBEDDING_MODEL=qwen3-embedding:4b` | 11434 | 호스트 프로세스(이 레포 compose 아님). dense dim **2560**. 서술 벡터는 Milvus. MariaDB `embeddings.chunks` VECTOR에 넣지 않음 |
 | UC-03/04 | **MinIO** `local-minio` | `MINIO_ENDPOINT=http://127.0.0.1:9000` | 9000 S3, 9001 콘솔 | 버킷 `market-quality-docs` (앱이 없으면 생성). `psychology-pdfs`/`ebook-pdfs`와 분리 |
 | UC-04 | **MariaDB 11.8** `local-mariadb` | `127.0.0.1:3306`, DB는 앱 스키마 | 3306 | 표 2층. `embeddings.chunks` VECTOR에 서술 청크를 넣지 않음 |
+| UC-07 | **MariaDB 11.8** `local-mariadb` | 같은 `market_quality` | 3306 | 입고 원장 `ingest_manifest`. 팩트가 아님. 벡터 아님. A/B/D 입고도 원장 조회로 이 포트가 필요 |
 | UC-05 | (없음) | UC-03/04 인덱스 읽기 | — | 입고 워커와 프로세스 분리 |
 
 헬스 (구현 전·통합 테스트 전):
@@ -268,6 +299,7 @@ curl -fsS http://127.0.0.1:11434/api/tags        # ollama. 목록에 qwen3-embed
 | UC-04 | `tests/unit/large_files_embedding/test_ingest_tabular.py` | `tests/integration/large_files_embedding/test_ingest_tabular.py` | xlsx 행 임베딩 요청은 도메인 예외. 원인/대책 칸 삭제는 거부 |
 | UC-05 | `tests/unit/large_files_embedding/test_serve_mcp.py` | `tests/integration/large_files_embedding/test_serve_mcp.py` | query_tables에 DROP이 있으면 거부한다. 필터 인자 존재 |
 | UC-06 | `tests/unit/large_files_embedding/test_configure_grok.py` | `tests/integration/large_files_embedding/test_configure_grok.py` | 빈 command면 예외. `~/.grok/config.toml`을 건드리지 않는다 |
+| UC-07 | `tests/unit/large_files_embedding/test_skip_unchanged_ingest.py` | `tests/integration/large_files_embedding/test_skip_unchanged_ingest.py` | 같은 바이트 두 번째 ingest는 parser/encoder를 호출하지 않는다. **경로가 달라도** 같은 바이트면 스킵. 바이트가 바뀌면 다시 입고. 실패 원장은 스킵하지 않음. `--force`는 스킵하지 않음 |
 
 순서: Red → Green → Refactor. 세부 규칙: `.grok/rules/testing.md`.
 
@@ -284,6 +316,7 @@ curl -fsS http://127.0.0.1:11434/api/tags        # ollama. 목록에 qwen3-embed
 | 4 | UC-04 | 표 입고 (calamine, 프로파일 JSON, Parquet 1층→MinIO, MariaDB 2층) | Milvus에 행이 없음. 1층 원본 컬럼. 차트시트 스킵. 스냅샷 UNION 없음 |
 | 5 | UC-05 | MCP 조회 서버 (필수 도구 전부) | 쓰기 SQL 거부. 인용 필드 존재 |
 | 6 | UC-06 | Grok `[mcp_servers.*]` 스니펫 | `~/.grok/config.toml`을 수정하지 않음. `uv run ruff format --check && uv run ruff check && uv run mypy src && uv run pytest` 통과 |
+| 7 | UC-07 | 파일 해시 스킵 + MariaDB 입고 원장 | 동일 바이트는 경로와 무관하게 extract/embed 없음. 성공 후에만 원장 기록. `--force` Green. **완료** |
 
 `/implement-uc`는 UC 안에서 domain → application → infrastructure → presentation 순서를 지킨다. PLAN Phase를 UC당 3줄로 쪼개지 않는다.
 
@@ -291,15 +324,17 @@ curl -fsS http://127.0.0.1:11434/api/tags        # ollama. 목록에 qwen3-embed
 
 ## Definition of Done (UC)
 
-- [x] UC 상태 `done`
-- [x] 단위·통합 테스트 Green
-- [x] `uv run ruff format --check && uv run ruff check && uv run mypy src && uv run pytest` 통과
-- [x] PLAN 레이어 배치·Port 표와 구현 경로가 일치
+- [x] UC-01~06 상태 `done` (v0.5)
+- [x] UC-07 상태 `done`
+- [x] 단위·통합 테스트 Green (UC-01~06). UC-07 추가 후 전체 재통과
+- [x] `uv run ruff format --check && uv run ruff check && uv run mypy src && uv run pytest` 통과 (UC-07 포함)
+- [x] PLAN 레이어 배치·Port 표와 구현 경로가 일치 (UC-01~06). UC-07 `ManifestStore` 경로 일치 후 체크
 - [x] C 가족 행이 `ChunkStore`에 없음 (UC-04, UC-05). 카탈로그 설명 청크만 허용. 1층 원본 컬럼 유지
 - [x] 서술 청크는 `contextualize`. 고정 길이 dump·마크다운-only 인덱스 없음
 - [x] MCP 응답에 파일명+위치. 근거 없으면 없다고 답함. 표 숫자를 서술에서 지어내지 않음
-- [x] `/implement-uc` reviewer **bug 0**
-- [x] `/implement-uc` security-reviewer **bug 0** — presentation이 끝나는 UC: CLI는 UC-06, MCP는 UC-05 (`--effort` ≥ 2). `--effort 1`은 security 생략
+- [x] 동일 내용 재입고는 원장 히트 시 extract/embed 없음. 실패·09+는 원장 성공 행 없음
+- [x] `/implement-uc` reviewer **bug 0** (UC-01~06)
+- [x] `/implement-uc` security-reviewer **bug 0** — presentation이 끝나는 UC: CLI는 UC-07(범위 확대 후), MCP는 UC-05 (`--effort` ≥ 2). `--effort 1`은 security 생략
 
 ---
 
@@ -348,6 +383,11 @@ coder는 이 파일의 Port/Adapter 표를 따른다. `InMemory*`는 테스트 �
 | 양식 매핑 없이 MariaDB 전량 적재 | 숫자는 들어가고 의미가 틀림 | 1층 Parquet+프로필만. 2층은 매핑된 팩트 |
 | RapidOCR 기본 lang / v6 korean 별칭 | 한글 스캔 깨짐 | `lang=["korean"]` PP-OCR v4/v5 |
 | Ollama 다운·모델 미pull | 서술 입고·`search_passages` 실패 | health에 `:11434`와 `qwen3-embedding:4b` 포함. 엑셀 SQL 조회는 유지 |
+| 내용 불변 재입고가 매번 임베딩 | 216p PDF 등에서 수 분·토큰 낭비 | UC-07 원장 스킵. `--force`로만 재처리 |
+| 실패를 성공 해시로 기록 | 깨진 파일이 영구 스킵 | 성공한 UC-03/04 뒤에만 insert |
+| 모델·청커 변경 후 스킵 | 옛 벡터가 남음 | 스킵 키에 `encoder_model`+`pipeline_version` |
+| 경로만 다르고 바이트 동일 | 청크 두 벌 | 스킵은 파일 해시만. 경로를 보지 않음 |
+| 같은 경로에 내용이 바뀐 뒤 옛 바이트가 다시 나타남 | 원장은 옛 해시를 성공으로 기억 | 경로 기준 폐기는 하지 않음(스킵은 해시만). `--force`로 재처리 |
 
 ---
 
@@ -363,3 +403,6 @@ coder는 이 파일의 Port/Adapter 표를 따른다. `InMemory*`는 테스트 �
 | 2026-09-05 | 0.5 | 사용자 승인. UC 구현·`/scaffold` 허용 | `approved` |
 | 2026-09-05 | 0.5 | dense 임베딩: 호스트 Ollama `qwen3-embedding:4b` (dim 2560, Milvus). MariaDB VECTOR 저장 금지는 유지 | `approved` |
 | 2026-09-05 | 0.5 | MCP 클라이언트: Codex CLI → Grok. UC-06은 `[mcp_servers.*]` 스니펫, `~/.grok/config.toml` 미수정 | `approved` |
+| 2026-09-06 | 0.6 | UC-07: 원본 SHA-256 재입고 스킵. 원장 MariaDB `ingest_manifest`. `--force`. MinIO는 스킵 인덱스 아님 | `revised` |
+| 2026-09-06 | 0.6 | UC-07 스킵은 **파일 바이트 해시만**. 경로·별칭·경로 기준 원장 폐기 없음 | `revised` |
+| 2026-09-06 | 0.6 | 사용자 재승인. UC-07 구현 허용 | `approved` |
