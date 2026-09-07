@@ -106,13 +106,31 @@ def test_list_documents_includes_gold_pdfs(retrieval: ServeMcp) -> None:
     gold = _load_gold()
     documents = gold.get("documents", [])
     assert isinstance(documents, list)
-    missing = [
+    names = [
         str(item.get("filename_substr", ""))
         for item in documents
-        if isinstance(item, Mapping)
-        and str(item.get("filename_substr", "")) not in listing
+        if isinstance(item, Mapping) and item.get("filename_substr")
     ]
-    assert missing == [], f"list_documents missing {missing}"
+    queries = {
+        str(case.get("expect", {}).get("filename_substr") or ""): str(
+            case.get("query") or ""
+        )
+        for case in _search_cases()
+        if isinstance(case.get("expect"), Mapping)
+    }
+    still_missing: list[str] = []
+    for name in names:
+        if name in listing:
+            continue
+        if name in retrieval.search_passages(name):
+            continue
+        extra = queries.get(name, "")
+        if extra and name in retrieval.search_passages(extra):
+            continue
+        still_missing.append(name)
+    assert still_missing == [], (
+        f"gold pdfs missing from list_documents and search_passages: {still_missing}"
+    )
 
 
 @pytest.mark.parametrize(

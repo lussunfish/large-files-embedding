@@ -10,6 +10,7 @@ import pytest
 from large_files_embedding.application.ingest_tabular import IngestTabular
 from large_files_embedding.domain.document import (
     MARKET_QUALITY_COLLECTION,
+    PROFILE_JSON_MAX_BYTES,
     Document,
     DocumentFormat,
     ExtractedTabular,
@@ -244,6 +245,39 @@ def _uc(
         tables,
         objects,
     )
+
+
+def test_wide_workbook_profile_json_is_clipped_under_limit() -> None:
+    import json
+
+    cols = tuple(f"GeneratorCol_{index:03d}" for index in range(80))
+    sheet = SheetProfile(
+        name="Operable",
+        kind=SheetKind.DATA,
+        n_rows=25000,
+        n_cols=80,
+        header_candidates=cols,
+        types=tuple((col, "String") for col in cols),
+        nulls=tuple((col, 0.1) for col in cols),
+        sample_rows=(cols, cols, cols, cols, cols),
+        original_columns=cols,
+    )
+    profile = TabularProfile(
+        source_file="09-3_1_Generator_Y2022.xlsx",
+        sheets=(sheet, sheet, sheet),
+    )
+    raw = profile.to_json_bytes()
+    assert len(raw) <= PROFILE_JSON_MAX_BYTES
+    payload = json.loads(raw.decode("utf-8"))
+    assert payload["sheets"][0]["n_cols"] == 80
+    extracted = _extracted(
+        sheets=(_layer1(columns=cols, sheet_name="Operable"),),
+        profile_sheets=(sheet,),
+        fact_table=None,
+        fact_rows=(),
+        source_file="09-3_1_Generator_Y2022.xlsx",
+    )
+    validate_extracted_tabular(extracted)
 
 
 def test_xlsx_row_embedding_request_raises_domain_exception() -> None:

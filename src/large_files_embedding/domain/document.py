@@ -684,7 +684,13 @@ class TabularProfile:
         raw = _profile_json_bytes(self, sample_limit=1, value_limit=40)
         if len(raw) <= PROFILE_JSON_MAX_BYTES:
             return raw
-        return _profile_json_bytes(self, sample_limit=0, value_limit=0)
+        raw = _profile_json_bytes(self, sample_limit=0, value_limit=0)
+        if len(raw) <= PROFILE_JSON_MAX_BYTES:
+            return raw
+        raw = _profile_json_bytes(self, sample_limit=0, value_limit=0, column_limit=20)
+        if len(raw) <= PROFILE_JSON_MAX_BYTES:
+            return raw
+        return _profile_json_bytes(self, sample_limit=0, value_limit=0, column_limit=8)
 
 
 @dataclass(frozen=True)
@@ -1011,7 +1017,11 @@ def _norm_col(name: str) -> str:
 
 
 def _profile_json_bytes(
-    profile: TabularProfile, *, sample_limit: int, value_limit: int
+    profile: TabularProfile,
+    *,
+    sample_limit: int,
+    value_limit: int,
+    column_limit: int | None = None,
 ) -> bytes:
     payload = {
         "source_file": profile.source_file,
@@ -1019,26 +1029,55 @@ def _profile_json_bytes(
         "delimiter": profile.delimiter,
         "sheet_names": [sheet.name for sheet in profile.sheets],
         "sheets": [
-            {
-                "name": sheet.name,
-                "kind": sheet.kind.value,
-                "n_rows": sheet.n_rows,
-                "n_cols": sheet.n_cols,
-                "header_candidates": list(sheet.header_candidates),
-                "types": dict(sheet.types),
-                "nulls": dict(sheet.nulls),
-                "sample_rows": [
-                    [_clip_profile_value(cell, value_limit) for cell in row]
-                    for row in sheet.sample_rows[:sample_limit]
-                ],
-                "original_columns": list(sheet.original_columns),
-            }
+            _sheet_profile_payload(
+                sheet,
+                sample_limit=sample_limit,
+                value_limit=value_limit,
+                column_limit=column_limit,
+            )
             for sheet in profile.sheets
         ],
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
         "utf-8"
     )
+
+
+def _sheet_profile_payload(
+    sheet: SheetProfile,
+    *,
+    sample_limit: int,
+    value_limit: int,
+    column_limit: int | None,
+) -> dict[str, object]:
+    headers = list(sheet.header_candidates)
+    types = list(sheet.types)
+    nulls = list(sheet.nulls)
+    original = list(sheet.original_columns)
+    if column_limit is not None:
+        headers = headers[:column_limit]
+        types = types[:column_limit]
+        nulls = nulls[:column_limit]
+        original = original[:column_limit]
+    sample_width = column_limit if column_limit is not None else None
+    samples = [
+        [
+            _clip_profile_value(cell, value_limit)
+            for cell in (row[:sample_width] if sample_width is not None else row)
+        ]
+        for row in sheet.sample_rows[:sample_limit]
+    ]
+    return {
+        "name": sheet.name,
+        "kind": sheet.kind.value,
+        "n_rows": sheet.n_rows,
+        "n_cols": sheet.n_cols,
+        "header_candidates": headers,
+        "types": dict(types),
+        "nulls": dict(nulls),
+        "sample_rows": samples,
+        "original_columns": original,
+    }
 
 
 def _clip_profile_value(value: object, limit: int) -> str:
