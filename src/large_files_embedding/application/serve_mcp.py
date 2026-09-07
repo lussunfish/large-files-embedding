@@ -1,7 +1,8 @@
-"""MCP query-only use case over ChunkStore and TableStore."""
+"""MCP query-only use case over ChunkStore, TableStore, and Layer1Store."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from large_files_embedding.domain.document import (
     FACT_TABLE_CATALOG,
     FORBIDDEN_MCP_TOOLS,
     MARKET_QUALITY_COLLECTION,
+    MCP_QUERY_LIMIT,
+    MCP_QUERY_LIMIT_MAX,
     MCP_SEARCH_CANDIDATES,
     MCP_SEARCH_TOP_K,
     MCP_TOOL_SPECS,
@@ -19,6 +22,7 @@ from large_files_embedding.domain.document import (
     DocumentFamily,
     EmbeddingEncoder,
     FailureReason,
+    Layer1Store,
     McpQueryError,
     McpToolSpec,
     PassageHit,
@@ -32,6 +36,8 @@ from large_files_embedding.domain.document import (
     parent_section_path,
     require_collection,
     require_fact_table,
+    require_layer1_doc_id,
+    require_readonly_layer1_sql,
     require_readonly_sql,
     require_sql_ident,
 )
@@ -43,12 +49,14 @@ class ServeMcp:
         chunks: ChunkStore,
         tables: TableStore,
         encoder: EmbeddingEncoder,
+        layer1: Layer1Store | None = None,
         *,
         collection: str = MARKET_QUALITY_COLLECTION,
     ) -> None:
         self._chunks = chunks
         self._tables = tables
         self._encoder = encoder
+        self._layer1 = layer1
         self._collection = require_collection(collection)
 
     def tool_specs(self) -> tuple[McpToolSpec, ...]:
@@ -104,6 +112,19 @@ class ServeMcp:
             )
         if tool == "describe_table":
             return self.describe_table(str(args.get("name") or ""))
+        if tool == "list_layer1":
+            return self.list_layer1()
+        if tool == "describe_profile":
+            return self.describe_profile(str(args.get("doc_id") or ""))
+        if tool == "query_layer1":
+            return self.query_layer1(
+                str(args.get("doc_id") or ""),
+                sheet=_opt_str(args.get("sheet")),
+                sql=_opt_str(args.get("sql")),
+                columns=_opt_str(args.get("columns")),
+                group_by=_opt_str(args.get("group_by")),
+                limit=_opt_int(args.get("limit")),
+            )
         return self.query_tables(
             sql=_opt_str(args.get("sql")),
             table=_opt_str(args.get("table")),
@@ -339,6 +360,150 @@ class ServeMcp:
         if not rows:
             return NO_EVIDENCE
         return clip_tool_text(_format_rows(rows), pointer="query_tables")
+
+    def list_layer1(self) -> str:
+        if self._layer1 is None:
+            return NO_EVIDENCE
+        lines: list[str] = []
+        for item in self._layer1.list_profiles():
+            if item.n_cols < 2:
+                continue
+            lines.append(
+                f"doc_id={item.doc_id} source_file={item.source_file} "
+                f"sheet={item.sheet_name} n_rows={item.n_rows} n_cols={item.n_cols}"
+            )
+        if not lines:
+            return NO_EVIDENCE
+        return clip_tool_text("\n".join(lines), pointer="list_layer1")
+
+    def describe_profile(self, doc_id: str) -> str:
+        if self._layer1 is None:
+            return NO_EVIDENCE
+        try:
+            key = require_layer1_doc_id(doc_id)
+        except McpQueryError:
+            return NO_EVIDENCE
+        raw = self._layer1.get_profile_bytes(key)
+        if not raw:
+            return NO_EVIDENCE
+        text = raw.decode("utf-8", errors="replace")
+        return clip_tool_text(text, pointer=f"describe_profile:{key}")
+
+    def query_layer1(
+        self,
+        doc_id: str,
+        sheet: str | None = None,
+        sql: str | None = None,
+        columns: str | None = None,
+        group_by: str | None = None,
+        limit: int | None = None,
+    ) -> str:
+        if self._layer1 is None:
+            return NO_EVIDENCE
+        try:
+            key = require_layer1_doc_id(doc_id)
+        except McpQueryError as exc:
+            return f"거부: {exc.reason.value}"
+        cap = (
+            MCP_QUERY_LIMIT
+            if limit is None
+            else max(1, min(int(limit), MCP_QUERY_LIMIT_MAX))
+        )
+        raw = self._layer1.get_profile_bytes(key)
+        if not raw:
+            return NO_EVIDENCE
+        source_file, queryable = _layer1_queryable_sheets(raw)
+        if sheet:
+            if sheet not in queryable:
+                return NO_EVIDENCE
+            resolved_sheet = sheet
+        elif len(queryable) == 1:
+            resolved_sheet = queryable[0]
+        elif not queryable:
+            return NO_EVIDENCE
+        else:
+            resolved_sheet = None
+        structured = bool(columns or group_by)
+        bound_sql = None if structured else sql
+        if bound_sql:
+            allowed = list(queryable)
+            if resolved_sheet:
+                allowed.insert(0, resolved_sheet)
+            allowed.append("layer1")
+            try:
+                require_readonly_layer1_sql(
+                    bound_sql, allowed_tables=allowed, doc_id=key
+                )
+            except McpQueryError as exc:
+                return f"거부: {exc.reason.value}"
+        try:
+            rows = self._layer1.query_parquet(
+                key,
+                sheet=resolved_sheet,
+                sql=bound_sql,
+                columns=columns if structured else None,
+                group_by=group_by if structured else None,
+                limit=cap,
+            )
+        except (McpQueryError, TabularIngestError) as exc:
+            return f"거부: {exc.reason.value}"
+        if not rows:
+            return NO_EVIDENCE
+        cited = [
+            _with_layer1_citation(
+                row, source_file=source_file, sheet_name=resolved_sheet or ""
+            )
+            for row in rows
+        ]
+        return clip_tool_text(_format_rows(cited), pointer="query_layer1")
+
+
+def _layer1_queryable_sheets(raw: bytes) -> tuple[str, list[str]]:
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "", []
+    if not isinstance(payload, dict):
+        return "", []
+    source_file = str(payload.get("source_file") or "")
+    sheets = payload.get("sheets")
+    if not isinstance(sheets, list):
+        return source_file, []
+    names: list[str] = []
+    for item in sheets:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if not name or _as_profile_int(item.get("n_cols")) < 2:
+            continue
+        names.append(name)
+    return source_file, names
+
+
+def _as_profile_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _with_layer1_citation(
+    row: Mapping[str, object], *, source_file: str, sheet_name: str
+) -> dict[str, object]:
+    merged = dict(row)
+    if source_file:
+        merged.setdefault("source_file", source_file)
+    if sheet_name:
+        merged.setdefault("sheet_name", sheet_name)
+    return merged
 
 
 def structured_table_sql(

@@ -75,7 +75,7 @@
 - 커밋 전 ruff + mypy + pytest
 - `survey/` 는 조사 산출물이며 앱 소스와 섞지 말 것. 포맷 SSOT: `survey/format-pipelines/README.md` + `01`–`08`. 상위: `survey/market-quality-rag-improvement.md`, `survey/excel-to-sql-decision.md`, `survey/xlsx-20-samples-layer1.md`, `survey/docx-pipeline.md`, `survey/doc-format-handling.md`
 - 09+ (HWP, MD/TXT/HTML, 메일, CAD 등 가족 E/F/G/H)는 PLAN 밖. 라우터에 없으면 실패 큐. `search_hwp` 같은 포맷별 MCP 도구 금지
-- MCP는 조회만, 입고는 CLI. 클라이언트는 **Grok**(stdio). `search` 하나만 두지 말 것. 숫자→`query_tables`(TAG), 대책/원인→`get_section`, 품번/코드→`search_passages`(sparse+필터)
+- MCP는 조회만, 입고는 CLI. 클라이언트는 **Grok**(stdio). `search` 하나만 두지 말 것. 숫자(매핑 팩트)→`query_tables`(TAG), 숫자(1층만)→`describe_profile`/`query_layer1`(UC-08), 대책/원인→`get_section`, 품번/코드→`search_passages`(sparse+필터)
 - `~/.grok/config.toml`과 `~/.codex/config.toml`을 덮어쓰지 말 것. 연동은 저장소 스니펫(`deploy/grok-mcp.toml`) 또는 프로젝트 `.grok/config.toml`의 `[mcp_servers.*]`
 - 도구 인자 `product`/`period`/`doc_type`. 모델이 자연어에서만 뽑게 두지 말 것
 - 응답에 파일명+페이지/시트/섹션. 근거 없으면 “근거 없음”. 표 숫자를 서술 청크에서 지어내지 말 것

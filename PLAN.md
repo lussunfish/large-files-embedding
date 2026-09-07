@@ -11,17 +11,18 @@
 |------|-----|
 | 상태 | `approved` |
 | 승인자 | sunfish |
-| 승인일 | 2026-09-06 |
-| 승인 범위 | v0.6 (UC-01~07, 포맷 01–08, 공유 `01-stable`) |
-| 직전 승인 | v0.5, sunfish, 2026-09-05 (UC-01~06) |
+| 승인일 | 2026-09-07 |
+| 승인 범위 | v0.7 (UC-01~07 유지 + UC-08 1층 MCP) |
+| 직전 승인 | v0.6, sunfish, 2026-09-06 (UC-01~07) |
 
 **상태**: `draft` · `approved` · `revised` (재승인 필요)
 
 승인 체크:
 
 - [x] 목표·비목표 합의 (스캔 OCR은 UC-03에 포함. 09+·행 임베딩·ColQwen 전체는 비목표)
-- [x] UC 우선순위·수용 기준 명확 (MCP 도구 목록이 닫혀 있음)
-- [x] 표는 프로파일 JSON + Parquet 1층, MariaDB 2층은 매핑된 팩트만
+- [x] UC 우선순위·수용 기준 명확 (MCP 도구 목록은 UC-05+UC-08)
+- [x] 표는 프로파일 JSON + Parquet 1층, MariaDB 2층은 매핑된 팩트만. 1층 조회는 DuckDB/MCP (승격 보류)
+- [x] UC-08: MinIO `profile.json`/Parquet을 Grok이 조회. 행 임베딩·파일당 테이블·자동 2층 승격 없음
 - [x] 실행 모드·명령어 확인 (`01-stable` 공유 스택)
 - [x] Phase 완료 조건이 검증 가능 (어댑터가 인메모리가 아님)
 - [x] UC-07: 스킵은 **파일 바이트 SHA-256만** (경로 무관). 입고 원장 MariaDB `ingest_manifest`. `--force`. 경로·별칭은 스킵 키에 넣지 않음
@@ -31,7 +32,7 @@
 ## 목표
 
 - 01–08 포맷을 시그니처 기준으로 라우팅해 서술 문서는 벡터, 표는 SQL로 입고한다
-- HybridChunker JSON 청크를 **공유 Milvus**(`127.0.0.1:19530`)에 넣고, 엑셀/CSV는 Parquet 랜딩 후 **MariaDB**로 조회한다
+- HybridChunker JSON 청크를 **공유 Milvus**(`127.0.0.1:19530`)에 넣고, 엑셀/CSV는 Parquet 랜딩 후 **매핑된 팩트만 MariaDB**, **매핑 없는 1층은 MCP(`query_layer1`)로** 조회한다
 - 원본·파생 객체는 **공유 MinIO**(`127.0.0.1:9000`) 버킷에 둔다
 - 같은 **파일 내용**(원본 SHA-256, 경로 무관)의 재입고는 Docling/Ollama/추출을 **스킵**한다. 성공 기록은 MariaDB 입고 원장
 - Grok(stdio MCP)에 연동해 담당자가 근거 있는 인사이트를 얻는다
@@ -43,7 +44,8 @@
 - 엑셀/CSV 행을 Milvus에 임베딩. Docling XLSX/CSV 백엔드로 행을 처리하기
 - GraphRAG, ColQwen 전체 재인덱스. 디지털 PDF 텍스트 인덱스를 ColPali/VLM으로 대체
 - 엑셀 시트마다 MariaDB 테이블을 1:1로 만드는 전량 적재. xlsx를 MariaDB BLOB로 넣기
-- 3,100개를 처음부터 curated SQL에 밀어 넣기. 100MB 원본을 LLM 컨텍스트/채팅에 올리기
+- 1층 Parquet를 MariaDB로 자동 승격·Grok이 `CREATE TABLE` (후속. 이번 UC-08 밖)
+- 3,100개를 처음부터 curated SQL에 밀어 넣기. 100MB 원본·Parquet 전 행을 LLM 컨텍스트/채팅에 올리기
 - Anthropic contextual retrieval(청크마다 LLM 설명)을 1차 경로로 쓰기
 - antiword/catdoc/catppt, python-docx로 `.doc`, python-pptx로 `.ppt`, xlrd
 - 이 레포에서 Milvus/MinIO/MariaDB compose를 새로 띄우기 (`01-stable` 공유 스택을 쓴다)
@@ -63,15 +65,17 @@
 - UC-02: `.doc`/`.ppt` LibreOffice 정규화 (원본 보존)
 - UC-03: PDF/DOCX/PPTX 서술 입고 (Docling JSON, 공유 Milvus 컬렉션, 임베딩)
 - UC-04: XLSX/XLS/CSV 표 입고 (calamine/polars, 프로파일 JSON, Parquet 1층→MinIO, 조회용 팩트는 MariaDB). 행 임베딩 금지
-- UC-05: MCP 조회 전용 도구 (목록은 UC-05 수용 기준)
+- UC-05: MCP 조회 전용 도구 (목록은 UC-05 수용 기준. UC-08이 1층 도구를 추가)
 - UC-06: Grok용 stdio MCP `[mcp_servers.*]` **스니펫 생성** (홈 `~/.grok/config.toml` 미수정)
 - UC-07: 원본 **파일 바이트** SHA-256으로 재입고 스킵 (경로 무관, 가족 A/B/C/D). 원장은 MariaDB `ingest_manifest`. MinIO는 객체만
+- UC-08: MinIO 1층(`profile.json` + Parquet)을 MCP로 조회 (DuckDB/polars scan). MariaDB 승격 없음
 
 ### 제외
 
 - 09번 이후 포맷 (가족 E/F/G/H 포함). 라우터 미등록이면 실패 큐
 - 엑셀/CSV 행 임베딩, Docling 표 백엔드로 SQL 경로
 - GraphRAG, ColQwen 전체 재인덱스, 시트 1:1 MariaDB 테이블, 원본 BLOB 적재
+- 1층→2층 승격 CLI, Grok 그루핑으로 동적 DDL, 주제만 같은 파일을 한 테이블로 UNION
 - `01-stable` 밖 인프라 중복 기동
 - 웹 UI, 클라우드 전용 파서 API, antiword/xlrd
 
@@ -81,7 +85,7 @@
 
 | ID | 이름 | 설명 | 경로 |
 |----|------|------|------|
-| BC-01 | Document | 01–08 포맷 입고(서술=공유 Milvus, 표=MariaDB, 객체=MinIO)와 MCP 조회 | `src/large_files_embedding/` |
+| BC-01 | Document | 01–08 포맷 입고(서술=공유 Milvus, 표=1층 MinIO + 매핑 팩트 MariaDB)와 MCP 조회 | `src/large_files_embedding/` |
 
 ### Ubiquitous Language
 
@@ -91,14 +95,15 @@
 | 가족 | A Word형, B PDF형, C 정형 표, D 슬라이드. 조사의 E~H(가벼운 텍스트·이미지·컨테이너·도면)는 이번 UC 밖 | 라우팅 |
 | 서술 청크 | Milvus에 넣는 텍스트/표 객체. C 가족 행이 아님. 임베딩 입력은 `chunker.contextualize` | UC-03, UC-05 |
 | 표 카탈로그 | MariaDB 스키마·팩트 + Milvus에 넣는 **시트/테이블 설명 문장**(행 데이터 아님) | UC-04, UC-05 |
-| 프로파일 JSON | 표 파일당 2~10KB 지문(시트·헤더·타입·샘플). LLM에는 이것만. 원본 워크북은 넣지 않음 | UC-04 |
-| 1층 / 2층 | 1층=Parquet 랜딩(원본 컬럼 유지). 2층=curated 팩트 SQL. 정규화는 2층만 | UC-04 |
+| 프로파일 JSON | 표 파일당 2~10KB 지문(시트·헤더·타입·샘플). LLM에는 이것만. 원본 워크북은 넣지 않음 | UC-04, UC-08 |
+| 1층 / 2층 | 1층=Parquet 랜딩(원본 컬럼 유지). 2층=curated 팩트 SQL. 정규화는 2층만 | UC-04, UC-08 |
+| 1층 조회 | MinIO의 `profile.json`·Parquet을 DuckDB/polars로 읽는 MCP. 2층 승격이 아님 | UC-08 |
 | 원장 | 한 행=사건 1건. UNION이 맞음 | UC-04 |
 | 입고 원장 | 성공한 입고 1건의 **파일 내용 해시**·지문. 테이블 `ingest_manifest`. 팩트 원장과 다름. 경로는 스킵에 쓰지 않음 | UC-07 |
 | 내용 해시 | 원본 **파일 바이트**의 SHA-256(hex 64자, 스트리밍). 경로·파일명은 입력에 넣지 않음. `.doc`/`.ppt`는 변환본이 아니라 원본 | UC-07 |
 | 입고 지문 | 스킵 키의 나머지. `encoder_model` + `pipeline_version`. 모델·청커가 바뀌면 스킵하지 않음. 경로 아님 | UC-07 |
 | 스냅샷 | 월보처럼 파일 단위 시점. `report_period` 없이 UNION 하면 중복 집계 | UC-04 |
-| TAG | Table-Augmented Generation. 숫자 질문은 RAG가 아니라 `query_tables` | UC-05 |
+| TAG | Table-Augmented Generation. 숫자 질문은 RAG가 아니라 `query_tables`(매핑 팩트) 또는 `query_layer1`(1층) | UC-05, UC-08 |
 | 실패 큐 | 파싱·변환 실패·미등록 포맷. 빈 문서로 인덱싱하지 않음. 배치는 계속 | UC-01~04 |
 | parent-child | 검색은 작은 청크, 답변은 부모 섹션(`get_section`) | UC-03, UC-05 |
 
@@ -115,10 +120,11 @@
 | UC-05 | MCP 조회 도구(search_passages, get_section, query_tables 등)를 제공한다 | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_serve_mcp.py` |
 | UC-06 | Grok용 stdio MCP config.toml 스니펫을 생성한다 | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_configure_grok.py` |
 | UC-07 | 파일 내용 해시가 같고 입고 지문이 같으면 재입고를 스킵한다 (경로 무관) | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_skip_unchanged_ingest.py` |
+| UC-08 | MinIO 1층 프로파일·Parquet을 MCP로 조회한다 (DuckDB/polars, 승격 없음) | BC-01 | P0 | `done` | `tests/unit/large_files_embedding/test_query_layer1.py` |
 
 상태: `planned` · `in_progress` · `done` · `deferred` · `cancelled`
 
-의존: UC-02는 라우팅 결과(정규화 대상)가 필요하다. UC-03/04는 UC-01 뒤에. UC-05는 UC-03·04가 저장한 인덱스를 읽는다. UC-06은 UC-05 엔트리포인트가 있어야 한다. UC-07은 UC-01 라우팅 뒤, UC-02 정규화·UC-03/04 추출 **앞**에서 조회하고, 성공한 UC-03/04 **뒤**에 원장을 기록한다.
+의존: UC-02는 라우팅 결과(정규화 대상)가 필요하다. UC-03/04는 UC-01 뒤에. UC-05는 UC-03·04가 저장한 인덱스를 읽는다. UC-06은 UC-05 엔트리포인트가 있어야 한다. UC-07은 UC-01 라우팅 뒤, UC-02 정규화·UC-03/04 추출 **앞**에서 조회하고, 성공한 UC-03/04 **뒤**에 원장을 기록한다. UC-08은 UC-04가 MinIO에 올린 1층과 UC-05 stdio 서버를 확장한다. 2층 승격에 의존하지 않는다.
 
 ### UC 수용 기준 (Given/When/Then)
 
@@ -167,8 +173,8 @@
 
 - **Given**: 서술 청크(공유 Milvus)와 표 카탈로그(MariaDB)가 있다
 - **When**: 아래 도구를 호출한다
-- **Then**: 각 응답에 파일명과 페이지 또는 시트 또는 섹션 경로가 붙고, 본문은 짧게 자른다. 도구 description에 **숫자 집계→`query_tables`(TAG/Text-to-SQL), 대책/원인→`get_section`, 코드/품번→`search_passages`(sparse+필터), 모호한 검색→`search_passages`** 를 적는다. `search` 하나만 두지 않는다. `list_documents`/`search_passages`/`list_tables`는 `product`, `period`, `doc_type` 필터 인자를 받는다. 근거가 없으면 “근거 없음”을 반환한다 (지어내지 않음). 표 숫자를 서술 청크에서 지어내지 않는다. `get_section`은 parent 섹션을 돌려 주고 잘린 자식 청크만으로 답하지 않는다. DOCX 인용은 페이지보다 `파일명+섹션 경로`가 우선이다
-- **필수 도구 (이 목록이 닫힌 수용 기준이다)**:
+- **Then**: 각 응답에 파일명과 페이지 또는 시트 또는 섹션 경로가 붙고, 본문은 짧게 자른다. 도구 description에 **숫자 집계(매핑 팩트)→`query_tables`, 숫자 집계(1층만)→`describe_profile` 후 `query_layer1`(UC-08), 대책/원인→`get_section`, 코드/품번→`search_passages`(sparse+필터), 모호한 검색→`search_passages`** 를 적는다. `search` 하나만 두지 않는다. `list_documents`/`search_passages`/`list_tables`는 `product`, `period`, `doc_type` 필터 인자를 받는다. 근거가 없으면 “근거 없음”을 반환한다 (지어내지 않음). 표 숫자를 서술 청크에서 지어내지 않는다. `get_section`은 parent 섹션을 돌려 주고 잘린 자식 청크만으로 답하지 않는다. DOCX 인용은 페이지보다 `파일명+섹션 경로`가 우선이다
+- **필수 도구 (UC-05 목록. UC-08이 1층 도구 3개를 추가한다)**:
   - `list_documents(product?, period?, doc_type?)`
   - `search_passages(query, filters?)` — dense+sparse, 가능하면 rerank top 50→5
   - `get_outline(doc_id)`
@@ -177,6 +183,7 @@
   - `get_page(doc_id, page)` — PDF 텍스트/저장된 페이지. ColQwen 아님
   - `list_slides` / `get_slide` — PPTX
   - `list_tables` / `describe_table` (grain·단위·한 행의 의미) / `query_tables` — MariaDB **읽기 전용**, LIMIT. 가능하면 임의 SQL보다 filters+group_by
+  - (UC-08) `list_layer1` / `describe_profile` / `query_layer1` — MinIO 1층. 수용 기준은 UC-08
 - **실패/경계**: 허용 스키마 밖 SQL·쓰기(`DROP`/`DELETE`/`INSERT`/`UPDATE`)는 거부한다. 입고·삭제는 MCP에 두지 않는다. 도구 출력이 길면 잘라서 포인터만 남긴다
 
 #### UC-06 — Grok용 stdio MCP config.toml 스니펫을 생성한다
@@ -201,6 +208,19 @@
   - 원장은 MariaDB `market_quality.ingest_manifest` 다. `claim_event`/`monthly_quality_kpi`에 붙이지 않는다. MinIO 유저 메타·매니페스트 객체를 스킵 인덱스로 쓰지 않는다. `embeddings.chunks` VECTOR에 넣지 않는다
 - **실패/경계**: 원장 조회 실패는 스킵으로 숨기지 않고 입고를 실패로 남긴다(부분 성공 원장 없음). 빈 파일 해시도 계산하되 이후 파서가 빈 문서로 거절하면 원장을 쓰지 않는다. 파일 해시만 같고 지문(모델·파이프라인)이 다르면 스킵하지 않는다. 경로만 다르고 바이트가 같으면 반드시 스킵한다
 
+#### UC-08 — MinIO 1층 프로파일·Parquet을 MCP로 조회한다 (DuckDB/polars, 승격 없음)
+
+- **Given**: UC-04가 MinIO `market-quality-docs`에 `{doc_id}/profile.json`과 `{doc_id}/layer1/{sheet}.parquet`를 올려 두었다. UC-05 stdio MCP가 있다. DuckDB 또는 polars `scan_parquet`를 쓸 수 있다
+- **When**: Grok이 아래 1층 도구를 호출한다
+- **Then**:
+  - **도구 3개**를 UC-05 목록에 추가한다. `search` 하나로 합치지 않는다. 입고·삭제·`CREATE TABLE`·2층 INSERT는 MCP에 두지 않는다
+    - `list_layer1()` — 버킷에서 `*/profile.json`을 나열한다. 각 줄에 `doc_id`, `source_file`, 시트명, `n_rows`, `n_cols`. 프로필이 없으면 건너뛴다. 비어 있으면 “근거 없음”
+    - `describe_profile(doc_id)` — 해당 `profile.json`만 돌려 준다 (2~10KB). Parquet 본문·원본 CSV를 붙이지 않는다. 없으면 “근거 없음”
+    - `query_layer1(doc_id, sheet?, sql?, columns?, group_by?, limit?)` — 그 `doc_id`의 1층 Parquet만 읽는다. **가능하면 sql보다 columns/group_by**. DuckDB 또는 polars `scan_parquet` (S3/MinIO 또는 스트리밍). 워크북·Parquet을 통째 메모리 로드 금지. 기본 LIMIT 100, 최대 500. 응답에 `source_file`+시트. 본문은 `clip_tool_text`(4000자)
+  - 도구 description: **매핑된 팩트 숫자→`query_tables`, 1층만 있는 표 숫자→`describe_profile` 후 `query_layer1`, 원인/대책→`get_section`, 품번→`search_passages`**. 표 숫자를 서술 청크에서 지어내지 않는다
+  - 조회는 읽기 전용이다. MariaDB 스키마를 만들지 않는다. 행을 Milvus에 넣지 않는다
+- **실패/경계**: `DROP`/`DELETE`/`INSERT`/`UPDATE`/`CREATE`/`COPY`/`ATTACH` 및 허용 `doc_id` 밖 경로·다른 버킷 SQL은 거부한다 (`query_tables`와 같은 읽기 전용 가드). LIMIT 없이 전 행을 돌려 주지 않는다. 한 열 산문·프로필 없는 객체는 “근거 없음”. 피벗/차트 시트 parquet가 없으면 조회하지 않는다. 2층 승격·파일당 테이블 생성은 이 UC 밖(후속)
+
 ---
 
 ## 아키텍처 설계
@@ -209,7 +229,7 @@
 
 입고는 `ingest(path) → detect → content_sha256 → 원장 조회 → (skip | normalize → extract(narrative|tabular) → 원장 기록)` 이다. 09+ 추가는 핸들러 한 개이며 MCP 도구를 포맷마다 늘리지 않는다. 컨테이너(메일/zip)·가족 E(MD/TXT/HTML)는 이번 범위에서 실패 큐. 표 추출기는 프로파일 JSON을 같이 낸다(별도 Port 없음). 입고 원장은 `TableStore`/`ObjectStore`에 끼워 넣지 않고 `ManifestStore` Port다.
 
-질문 유형과 도구: 코드/키워드 → `search_passages`(sparse+필터), 수치/집계 → `query_tables`(TAG), 원인·대책 → `get_section`, 차트 페이지 → `get_page`(비전 인덱스는 후속).
+질문 유형과 도구: 코드/키워드 → `search_passages`(sparse+필터), 수치/집계(매핑 팩트) → `query_tables`(TAG), 수치/집계(1층만) → `describe_profile`/`query_layer1`, 원인·대책 → `get_section`, 차트 페이지 → `get_page`(비전 인덱스는 후속).
 
 ### 레이어 배치
 
@@ -222,6 +242,7 @@
 | UC-05 | `document.py` | `serve_mcp.py` | `milvus_chunk_store.py`, `mariadb_table_store.py` (읽기) | `mcp/server.py` |
 | UC-06 | `document.py` | `configure_grok.py` | `grok_snippet_writer.py` | `cli/configure.py` |
 | UC-07 | `document.py` | `skip_unchanged_ingest.py` | `mariadb_manifest_store.py` | `cli/ingest.py` |
+| UC-08 | `document.py` | `serve_mcp.py` (확장) | `minio_object_store.py` (읽기), `duckdb_layer1.py` | `mcp/server.py` |
 
 ### Port & Adapter
 
@@ -232,10 +253,11 @@
 | `NarrativeParser` | `DoclingNarrativeParser` | UC-03 | JSON 보관. 가족 A/B/D 분기. 고정 길이 청크 아님 |
 | `EmbeddingEncoder` | `DenseSparseEncoder` | UC-03, UC-05 | dense = Ollama `qwen3-embedding:4b` (`127.0.0.1:11434`). sparse/BM25는 Milvus. 더미 벡터 금지 |
 | `ChunkStore` | `MilvusChunkStore` | UC-03, UC-05 | `127.0.0.1:19530`, 컬렉션 `market_quality_chunks_hybrid`. C 행 금지. Lite 파일 백엔드 아님 |
-| `ObjectStore` | `MinioObjectStore` | UC-03, UC-04 | `127.0.0.1:9000`, 버킷 `market-quality-docs`. Milvus 내부 MinIO와 합치지 않음 |
+| `ObjectStore` | `MinioObjectStore` | UC-03, UC-04, UC-08 | `127.0.0.1:9000`, 버킷 `market-quality-docs`. UC-08은 `get_bytes`/`list_prefix` 읽기. Milvus 내부 MinIO와 합치지 않음 |
+| `Layer1Store` | `DuckDbLayer1Store` | UC-08 | MinIO 1층 Parquet을 DuckDB 또는 polars `scan_parquet`. 통째 로드 금지. MariaDB 아님 |
 | `TabularExtractor` | `CalamineTabularExtractor` | UC-04 | polars/fastexcel. 프로파일 JSON 포함. Docling XLSX 백엔드 아님 |
 | `TableStore` | `MariaDbTableStore` | UC-04, UC-05 | `127.0.0.1:3306`. 단위 테스트 더블만 DuckDB/in-memory |
-| `McpServer` | `StdioMcpServer` | UC-05 | 조회 전용 |
+| `McpServer` | `StdioMcpServer` | UC-05, UC-08 | 조회 전용. 입고·승격·DDL 없음 |
 | `GrokConfigExporter` | `TomlSnippetWriter` | UC-06 | `~/.grok/config.toml`을 덮지 않음. Grok `[mcp_servers.*]` 스니펫 |
 | `ManifestStore` | `MariaDbManifestStore` | UC-07 | `market_quality.ingest_manifest`. 성공 행만 스킵. 팩트 테이블·MinIO 키 인덱스 아님 |
 
@@ -271,10 +293,11 @@
 | UC-02 | LibreOffice soffice | `DOCLING_LIBREOFFICE_CMD` 또는 PATH | — | OS 패키지. 한글 폰트 필요 |
 | UC-03 | **Milvus standalone** `local-milvus` | `MILVUS_URI=http://127.0.0.1:19530` | 19530 gRPC, 9091 health, 8001 Attu | 컬렉션 `market_quality_chunks_hybrid`. Lite(`milvus.db`) 아님. 내부 `local-milvus-minio`는 호스트 포트 없음 |
 | UC-03 | **Ollama** `qwen3-embedding:4b` | `OLLAMA_HOST=http://127.0.0.1:11434`, `EMBEDDING_MODEL=qwen3-embedding:4b` | 11434 | 호스트 프로세스(이 레포 compose 아님). dense dim **2560**. 서술 벡터는 Milvus. MariaDB `embeddings.chunks` VECTOR에 넣지 않음 |
-| UC-03/04 | **MinIO** `local-minio` | `MINIO_ENDPOINT=http://127.0.0.1:9000` | 9000 S3, 9001 콘솔 | 버킷 `market-quality-docs` (앱이 없으면 생성). `psychology-pdfs`/`ebook-pdfs`와 분리 |
+| UC-03/04/08 | **MinIO** `local-minio` | `MINIO_ENDPOINT=http://127.0.0.1:9000` | 9000 S3, 9001 콘솔 | 버킷 `market-quality-docs` (앱이 없으면 생성). UC-08은 `profile.json`·layer1 parquet 읽기. `psychology-pdfs`/`ebook-pdfs`와 분리 |
 | UC-04 | **MariaDB 11.8** `local-mariadb` | `127.0.0.1:3306`, DB는 앱 스키마 | 3306 | 표 2층. `embeddings.chunks` VECTOR에 서술 청크를 넣지 않음 |
 | UC-07 | **MariaDB 11.8** `local-mariadb` | 같은 `market_quality` | 3306 | 입고 원장 `ingest_manifest`. 팩트가 아님. 벡터 아님. A/B/D 입고도 원장 조회로 이 포트가 필요 |
 | UC-05 | (없음) | UC-03/04 인덱스 읽기 | — | 입고 워커와 프로세스 분리 |
+| UC-08 | **DuckDB** (호스트 uv) | 앱 의존성 `duckdb` | — | 1층 `scan_parquet`. 이 레포 compose 아님. MariaDB·Milvus 아님 |
 
 헬스 (구현 전·통합 테스트 전):
 
@@ -300,6 +323,7 @@ curl -fsS http://127.0.0.1:11434/api/tags        # ollama. 목록에 qwen3-embed
 | UC-05 | `tests/unit/large_files_embedding/test_serve_mcp.py` | `tests/integration/large_files_embedding/test_serve_mcp.py` | query_tables에 DROP이 있으면 거부한다. 필터 인자 존재 |
 | UC-06 | `tests/unit/large_files_embedding/test_configure_grok.py` | `tests/integration/large_files_embedding/test_configure_grok.py` | 빈 command면 예외. `~/.grok/config.toml`을 건드리지 않는다 |
 | UC-07 | `tests/unit/large_files_embedding/test_skip_unchanged_ingest.py` | `tests/integration/large_files_embedding/test_skip_unchanged_ingest.py` | 같은 바이트 두 번째 ingest는 parser/encoder를 호출하지 않는다. **경로가 달라도** 같은 바이트면 스킵. 바이트가 바뀌면 다시 입고. 실패 원장은 스킵하지 않음. `--force`는 스킵하지 않음 |
+| UC-08 | `tests/unit/large_files_embedding/test_query_layer1.py` | `tests/integration/large_files_embedding/test_query_layer1.py` | `query_layer1`에 DROP/CREATE가 있으면 거부. `describe_profile`은 parquet 본문을 포함하지 않는다. 응답은 LIMIT·4000자 클립. MariaDB 테이블을 만들지 않는다 |
 
 순서: Red → Green → Refactor. 세부 규칙: `.grok/rules/testing.md`.
 
@@ -317,6 +341,7 @@ curl -fsS http://127.0.0.1:11434/api/tags        # ollama. 목록에 qwen3-embed
 | 5 | UC-05 | MCP 조회 서버 (필수 도구 전부) | 쓰기 SQL 거부. 인용 필드 존재 |
 | 6 | UC-06 | Grok `[mcp_servers.*]` 스니펫 | `~/.grok/config.toml`을 수정하지 않음. `uv run ruff format --check && uv run ruff check && uv run mypy src && uv run pytest` 통과 |
 | 7 | UC-07 | 파일 해시 스킵 + MariaDB 입고 원장 | 동일 바이트는 경로와 무관하게 extract/embed 없음. 성공 후에만 원장 기록. `--force` Green. **완료** |
+| 8 | UC-08 | 1층 MCP (`list_layer1` / `describe_profile` / `query_layer1`) | DROP/CREATE 거부. 프로필만 먼저. 전 행 덤프 없음. MariaDB DDL 없음. **완료** |
 
 `/implement-uc`는 UC 안에서 domain → application → infrastructure → presentation 순서를 지킨다. PLAN Phase를 UC당 3줄로 쪼개지 않는다.
 
@@ -335,6 +360,9 @@ curl -fsS http://127.0.0.1:11434/api/tags        # ollama. 목록에 qwen3-embed
 - [x] 동일 내용 재입고는 원장 히트 시 extract/embed 없음. 실패·09+는 원장 성공 행 없음
 - [x] `/implement-uc` reviewer **bug 0** (UC-01~06)
 - [x] `/implement-uc` security-reviewer **bug 0** — presentation이 끝나는 UC: CLI는 UC-07(범위 확대 후), MCP는 UC-05 (`--effort` ≥ 2). `--effort 1`은 security 생략
+- [x] UC-08 상태 `done` (재승인 후)
+- [x] 1층 MCP: `list_layer1` / `describe_profile` / `query_layer1`. 읽기 전용. 전 행·원본 CSV를 컨텍스트에 넣지 않음
+- [x] UC-08 `/implement-uc` reviewer **bug 0**. MCP presentation이 다시 열리므로 security도 UC-08 (`--effort` ≥ 2)
 
 ---
 
@@ -380,7 +408,10 @@ coder는 이 파일의 Port/Adapter 표를 따른다. `InMemory*`는 테스트 �
 | 스캔 PDF를 디지털 경로에 넣음 | 검색 공백 | 텍스트 층 밀도로 OCR 분기 (UC-03) |
 | 반복 헤더/푸터를 본문에 넣음 | 품번이 모든 페이지에 나와 검색 오염 | 헤더/푸터는 메타, 본문에서 제거 |
 | 월보 스냅샷 UNION | 건수 중복 집계 | `report_period` 필수. 원장만 UNION |
-| 양식 매핑 없이 MariaDB 전량 적재 | 숫자는 들어가고 의미가 틀림 | 1층 Parquet+프로필만. 2층은 매핑된 팩트 |
+| 양식 매핑 없이 MariaDB 전량 적재 | 숫자는 들어가고 의미가 틀림 | 1층 Parquet+프로필만. 2층은 매핑된 팩트. 조회는 `query_layer1` |
+| `query_layer1`이 전 행을 반환 | Grok 컨텍스트 폭주 | 기본 LIMIT 100, 클립 4000자, `scan_parquet` |
+| 1층 SQL이 다른 버킷/로컬 파일 | 데이터 유출 | `doc_id` 화이트리스트. COPY/ATTACH/CREATE 거부 |
+| DuckDB가 MinIO 자격 없이 실패 | 1층 조회 전부 실패 | ObjectStore 읽기 + 기존 MinIO 폴백. 통합 테스트는 인프라 없으면 skip |
 | RapidOCR 기본 lang / v6 korean 별칭 | 한글 스캔 깨짐 | `lang=["korean"]` PP-OCR v4/v5 |
 | Ollama 다운·모델 미pull | 서술 입고·`search_passages` 실패 | health에 `:11434`와 `qwen3-embedding:4b` 포함. 엑셀 SQL 조회는 유지 |
 | 내용 불변 재입고가 매번 임베딩 | 216p PDF 등에서 수 분·토큰 낭비 | UC-07 원장 스킵. `--force`로만 재처리 |
@@ -406,3 +437,5 @@ coder는 이 파일의 Port/Adapter 표를 따른다. `InMemory*`는 테스트 �
 | 2026-09-06 | 0.6 | UC-07: 원본 SHA-256 재입고 스킵. 원장 MariaDB `ingest_manifest`. `--force`. MinIO는 스킵 인덱스 아님 | `revised` |
 | 2026-09-06 | 0.6 | UC-07 스킵은 **파일 바이트 해시만**. 경로·별칭·경로 기준 원장 폐기 없음 | `revised` |
 | 2026-09-06 | 0.6 | 사용자 재승인. UC-07 구현 허용 | `approved` |
+| 2026-09-07 | 0.7 | UC-08: MinIO 1층 MCP 조회 (`list_layer1`/`describe_profile`/`query_layer1`). DuckDB scan. 2층 승격·동적 DDL 보류 | `revised` |
+| 2026-09-07 | 0.7 | 사용자 재승인. UC-08 구현 허용 | `approved` |

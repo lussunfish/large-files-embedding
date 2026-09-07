@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from minio import Minio
+from minio.error import S3Error
 
 from large_files_embedding.domain.document import (
     FailureReason,
@@ -77,6 +78,48 @@ class MinioObjectStore:
             )
         except Exception as exc:
             raise NarrativeIngestError(FailureReason.PARSE_FAILED) from exc
+
+    def get_bytes(self, key: str) -> bytes | None:
+        client = self._client_or_connect()
+        try:
+            response = client.get_object(self._bucket, key)
+            try:
+                return response.read()
+            finally:
+                response.close()
+                response.release_conn()
+        except S3Error as exc:
+            if exc.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
+                return None
+            raise NarrativeIngestError(FailureReason.QUERY_FAILED) from exc
+        except Exception as exc:
+            raise NarrativeIngestError(FailureReason.QUERY_FAILED) from exc
+
+    def download_to(self, key: str, dest: Path) -> bool:
+        client = self._client_or_connect()
+        try:
+            client.fget_object(self._bucket, key, str(dest))
+            return True
+        except S3Error as exc:
+            if exc.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
+                return False
+            raise NarrativeIngestError(FailureReason.QUERY_FAILED) from exc
+        except Exception as exc:
+            raise NarrativeIngestError(FailureReason.QUERY_FAILED) from exc
+
+    def list_prefix(self, prefix: str) -> list[str]:
+        client = self._client_or_connect()
+        names: list[str] = []
+        try:
+            for obj in client.list_objects(
+                self._bucket, prefix=prefix or "", recursive=True
+            ):
+                name = getattr(obj, "object_name", None)
+                if name:
+                    names.append(str(name))
+        except Exception as exc:
+            raise NarrativeIngestError(FailureReason.QUERY_FAILED) from exc
+        return names
 
     def _client_or_connect(self) -> Minio:
         if self._client is None:

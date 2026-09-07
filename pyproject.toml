@@ -15,6 +15,7 @@ dependencies = [
     "python-calamine>=0.3",
     "pymysql>=1.1",
     "mcp>=1.9",
+    "duckdb>=1.2",
 ]
 
 [dependency-groups]
@@ -66,6 +67,8 @@ module = [
     "pymysql.*",
     "mcp",
     "mcp.*",
+    "duckdb",
+    "duckdb.*",
     "pptx",
     "pptx.*",
     "pypdfium2",

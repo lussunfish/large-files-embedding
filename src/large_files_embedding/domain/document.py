@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -444,6 +445,18 @@ class ObjectStore(Protocol):
         """Store a file without requiring the caller to load it fully."""
         ...
 
+    def get_bytes(self, key: str) -> bytes | None:
+        """Read object bytes from this bucket. Missing keys return None."""
+        ...
+
+    def list_prefix(self, prefix: str) -> Sequence[str]:
+        """List object keys under prefix in this bucket only."""
+        ...
+
+    def download_to(self, key: str, dest: Path) -> bool:
+        """Stream object to dest without loading the whole body in RAM."""
+        ...
+
 
 def require_collection(name: str) -> str:
     if name in FORBIDDEN_COLLECTIONS or name != MARKET_QUALITY_COLLECTION:
@@ -455,6 +468,66 @@ def require_bucket(name: str) -> str:
     if name in FORBIDDEN_BUCKETS or name != MARKET_QUALITY_BUCKET:
         raise NarrativeIngestError(FailureReason.FORBIDDEN_BUCKET, name)
     return name
+
+
+_LAYER1_DOC_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_LAYER1_UNSAFE_SHEET_RE = re.compile(r"[/\\]+")
+
+
+@dataclass(frozen=True)
+class Layer1SheetListing:
+    doc_id: str
+    source_file: str
+    sheet_name: str
+    n_rows: int
+    n_cols: int
+
+
+class Layer1Store(Protocol):
+    def list_profiles(self) -> Sequence[Layer1SheetListing]:
+        """List sheets from */profile.json. Skip objects without a profile."""
+        ...
+
+    def get_profile_bytes(self, doc_id: str) -> bytes | None:
+        """Return profile.json only. Do not attach parquet or CSV."""
+        ...
+
+    def query_parquet(
+        self,
+        doc_id: str,
+        *,
+        sheet: str | None,
+        sql: str | None,
+        columns: str | None,
+        group_by: str | None,
+        limit: int,
+    ) -> Sequence[Mapping[str, object]]:
+        """Scan one doc_id's layer-1 parquet. Read-only; do not load the workbook."""
+        ...
+
+
+def require_layer1_doc_id(doc_id: str) -> str:
+    text = (doc_id or "").strip()
+    if not _LAYER1_DOC_ID_RE.fullmatch(text):
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, doc_id)
+    return text
+
+
+def layer1_profile_key(doc_id: str) -> str:
+    return f"{require_layer1_doc_id(doc_id)}/profile.json"
+
+
+def layer1_parquet_prefix(doc_id: str) -> str:
+    return f"{require_layer1_doc_id(doc_id)}/layer1/"
+
+
+def layer1_sheet_filename(sheet: str) -> str:
+    cleaned = _LAYER1_UNSAFE_SHEET_RE.sub("_", sheet).strip() or "sheet"
+    return cleaned
+
+
+def layer1_parquet_key(doc_id: str, sheet: str) -> str:
+    return f"{layer1_parquet_prefix(doc_id)}{layer1_sheet_filename(sheet)}.parquet"
 
 
 def require_milvus_uri(uri: str) -> str:
@@ -993,6 +1066,9 @@ MCP_TOOL_NAMES = (
     "list_tables",
     "describe_table",
     "query_tables",
+    "list_layer1",
+    "describe_profile",
+    "query_layer1",
 )
 FORBIDDEN_MCP_TOOLS = frozenset({"search", "ingest", "delete", "search_hwp"})
 FORBIDDEN_SQL_SCHEMAS = frozenset(
@@ -1001,8 +1077,8 @@ FORBIDDEN_SQL_SCHEMAS = frozenset(
 ALLOWED_SQL_SCHEMAS = frozenset({"", DEFAULT_MARIADB_DATABASE})
 _SQL_WRITE_RE = re.compile(
     r"\b(DROP|DELETE|INSERT|UPDATE|ALTER|TRUNCATE|CREATE|REPLACE|GRANT|"
-    r"REVOKE|MERGE|CALL|LOAD|HANDLER|LOCK|UNLOCK|INTO\s+OUTFILE|"
-    r"INTO\s+DUMPFILE)\b",
+    r"REVOKE|MERGE|CALL|LOAD|HANDLER|LOCK|UNLOCK|COPY|ATTACH|DETACH|"
+    r"INTO\s+OUTFILE|INTO\s+DUMPFILE)\b",
     re.IGNORECASE,
 )
 _SQL_DANGEROUS_RE = re.compile(
@@ -1027,11 +1103,36 @@ _SQL_INDEX_HINT_HEAD_RE = re.compile(
 )
 _SQL_PARTITION_HEAD_RE = re.compile(r"^PARTITION\b", re.IGNORECASE)
 _SQL_TABLE_NAME_RE = re.compile(
-    r"^`?([A-Za-z0-9_]+)`?(?:\s*\.\s*`?([A-Za-z0-9_]+)`?)?"
-    r"(?:\s+(?:AS\s+)?`?[A-Za-z0-9_]+`?)?\s*$",
+    r'^["`]?(\w+)["`]?(?:\s*\.\s*["`]?(\w+)["`]?)?'
+    r'(?:\s+(?:AS\s+)?["`]?\w+["`]?)?\s*$',
     re.IGNORECASE,
 )
 _SQL_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_LAYER1_IDENT_RE = re.compile(r"^\w+$")
+_LAYER1_TABLE_FUNCS = (
+    "read_text",
+    "read_blob",
+    "read_csv",
+    "read_json",
+    "read_parquet",
+    "read_csv_auto",
+    "read_duckdb",
+    "parquet_scan",
+    "glob",
+    "query",
+    "sniff_csv",
+    "excel",
+    "read_xlsx",
+    "read_ods",
+)
+_LAYER1_FORBIDDEN_SQL_RE = re.compile(
+    r"(?:\.\.|://|\\|\.parquet\b|\.csv\b|\.json\b|"
+    r"(?:read_text|read_blob|read_csv|read_json|read_parquet|"
+    r"read_csv_auto|read_duckdb|parquet_scan|glob|query|sniff_csv|"
+    r"excel|read_xlsx|read_ods)\s*\(|"
+    r"psychology-pdfs|ebook-pdfs)",
+    re.IGNORECASE,
+)
 _SQL_LIMIT_TAIL_RE = re.compile(
     r"\bLIMIT\s+(\d+)\s*(?:,\s*(\d+))?\s*(?:OFFSET\s+(\d+))?\s*$",
     re.IGNORECASE,
@@ -1103,7 +1204,9 @@ MCP_TOOL_SPECS: tuple[McpToolSpec, ...] = (
         name="list_documents",
         description=(
             "문서 목록. product/period/doc_type 필터. "
-            "숫자 집계→query_tables(TAG), 원인/대책→get_section, "
+            "숫자 집계(매핑 팩트)→query_tables(TAG), "
+            "숫자 집계(1층만)→describe_profile 후 query_layer1, "
+            "원인/대책→get_section, "
             "품번/코드→search_passages(sparse+필터). search 하나만 두지 않음."
         ),
         parameters=("product", "period", "doc_type"),
@@ -1112,7 +1215,9 @@ MCP_TOOL_SPECS: tuple[McpToolSpec, ...] = (
         name="search_passages",
         description=(
             "모호한 검색과 품번/코드/키워드는 search_passages. dense+sparse "
-            "하이브리드와 product/period/doc_type 필터. 숫자 집계는 query_tables, "
+            "하이브리드와 product/period/doc_type 필터. "
+            "숫자 집계(매핑 팩트)는 query_tables, "
+            "숫자 집계(1층만)는 describe_profile 후 query_layer1, "
             "원인/대책은 get_section. 표 숫자를 서술 청크에서 지어내지 말 것."
         ),
         parameters=("query", "product", "period", "doc_type"),
@@ -1133,7 +1238,8 @@ MCP_TOOL_SPECS: tuple[McpToolSpec, ...] = (
     McpToolSpec(
         name="get_table",
         description=(
-            "문서 안 표 청크. 표 숫자 집계는 query_tables. "
+            "문서 안 표 청크. 표 숫자 집계(매핑 팩트)는 query_tables, "
+            "1층만 있는 표는 describe_profile 후 query_layer1. "
             "서술 청크에서 숫자를 지어내지 말 것."
         ),
         parameters=("doc_id", "table_id"),
@@ -1159,7 +1265,8 @@ MCP_TOOL_SPECS: tuple[McpToolSpec, ...] = (
         name="list_tables",
         description=(
             "MariaDB 팩트 표 목록. product/period/doc_type 필터. "
-            "숫자는 query_tables, 원인/대책은 get_section."
+            "숫자는 query_tables, 1층만 있는 표는 describe_profile 후 "
+            "query_layer1, 원인/대책은 get_section."
         ),
         parameters=("product", "period", "doc_type"),
     ),
@@ -1171,8 +1278,9 @@ MCP_TOOL_SPECS: tuple[McpToolSpec, ...] = (
     McpToolSpec(
         name="query_tables",
         description=(
-            "숫자 집계는 query_tables(TAG/Text-to-SQL). MariaDB 읽기 전용, LIMIT. "
-            "가능하면 sql보다 filters+group_by. "
+            "숫자 집계(매핑 팩트)는 query_tables(TAG/Text-to-SQL). "
+            "MariaDB 읽기 전용, LIMIT. 가능하면 sql보다 filters+group_by. "
+            "1층만 있는 표 숫자는 describe_profile 후 query_layer1. "
             "DROP/DELETE/INSERT/UPDATE와 허용 스키마 밖 SQL은 거부. "
             "원인/대책은 get_section, 품번/코드는 search_passages."
         ),
@@ -1185,6 +1293,37 @@ MCP_TOOL_SPECS: tuple[McpToolSpec, ...] = (
             "group_by",
             "limit",
         ),
+    ),
+    McpToolSpec(
+        name="list_layer1",
+        description=(
+            "MinIO 1층 profile.json 목록. 프로필 없는 객체는 건너뛴다. "
+            "매핑된 팩트 숫자→query_tables, 1층만 있는 표 숫자→describe_profile "
+            "후 query_layer1, 원인/대책→get_section, 품번→search_passages. "
+            "표 숫자를 서술 청크에서 지어내지 말 것."
+        ),
+        parameters=(),
+    ),
+    McpToolSpec(
+        name="describe_profile",
+        description=(
+            "1층 profile.json만 반환(2~10KB). Parquet 본문·원본 CSV를 붙이지 않음. "
+            "1층 표 숫자는 describe_profile 후 query_layer1. "
+            "매핑된 팩트 숫자→query_tables, 원인/대책→get_section, "
+            "품번→search_passages."
+        ),
+        parameters=("doc_id",),
+    ),
+    McpToolSpec(
+        name="query_layer1",
+        description=(
+            "1층 Parquet만 조회(DuckDB/polars scan). 가능하면 sql보다 "
+            "columns/group_by. 기본 LIMIT 100 최대 500. 읽기 전용. "
+            "DROP/DELETE/INSERT/UPDATE/CREATE/COPY/ATTACH 및 허용 doc_id 밖 "
+            "경로는 거부. 매핑된 팩트 숫자→query_tables, 원인/대책→get_section, "
+            "품번→search_passages."
+        ),
+        parameters=("doc_id", "sheet", "sql", "columns", "group_by", "limit"),
     ),
 )
 
@@ -1246,24 +1385,16 @@ def require_sql_ident(name: str) -> str:
     return name
 
 
+def require_layer1_ident(name: str) -> str:
+    text = name.strip()
+    if not text or not _LAYER1_IDENT_RE.fullmatch(text):
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, name)
+    return text
+
+
 def require_readonly_sql(sql: str) -> str:
-    if not isinstance(sql, str) or not sql.strip():
-        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
-    stripped = sql.strip().rstrip(";")
-    if ";" in stripped:
-        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
-    if "/*!" in stripped:
-        if _SQL_WRITE_RE.search(stripped):
-            raise McpQueryError(FailureReason.SQL_WRITE, sql)
-        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
-    noise_free = _strip_sql_noise(stripped)
-    if _SQL_WRITE_RE.search(noise_free) or _SQL_WRITE_RE.search(stripped):
-        raise McpQueryError(FailureReason.SQL_WRITE, sql)
-    if _SQL_DANGEROUS_RE.search(noise_free) or _SQL_DANGEROUS_RE.search(stripped):
-        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
-    if not _SQL_SELECT_HEAD_RE.search(noise_free):
-        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
-    refs = _sql_table_refs(noise_free)
+    stripped = _require_select_sql(sql)
+    refs = _sql_table_refs(_strip_sql_noise(stripped))
     if not refs:
         raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
     for schema, table in refs:
@@ -1288,6 +1419,88 @@ def ensure_sql_limit(sql: str, limit: int = MCP_QUERY_LIMIT) -> str:
     if offset is not None:
         return f"{prefix} LIMIT {count} OFFSET {int(offset)}"
     return f"{prefix} LIMIT {count}"
+
+
+def require_readonly_layer1_sql(
+    sql: str,
+    *,
+    allowed_tables: Sequence[str],
+    doc_id: str,
+) -> str:
+    normalized = _normalize_layer1_sql_chars(sql)
+    stripped = _require_select_sql(normalized)
+    noise_free = _strip_sql_noise(stripped)
+    if _LAYER1_FORBIDDEN_SQL_RE.search(noise_free) or _LAYER1_FORBIDDEN_SQL_RE.search(
+        stripped
+    ):
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    collapsed = re.sub(r"\s+", "", noise_free.lower())
+    for func in _LAYER1_TABLE_FUNCS:
+        if f"{func}(" in collapsed:
+            raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    doc = require_layer1_doc_id(doc_id)
+    if doc.lower() not in stripped.lower() and any(
+        token in stripped.lower()
+        for token in ("layer1/", "/layer1", "market-quality-docs", "s3")
+    ):
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    refs = _sql_table_refs(noise_free)
+    if not refs:
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    allowed = {_layer1_table_key(name) for name in allowed_tables if name}
+    allowed.add("layer1")
+    for schema, table in refs:
+        if schema:
+            raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, f"{schema}.{table}")
+        if _layer1_table_key(table) not in allowed:
+            raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, table)
+    return stripped
+
+
+def _normalize_layer1_sql_chars(sql: str) -> str:
+    parts: list[str] = []
+    for char in sql:
+        category = unicodedata.category(char)
+        if category in {"Cf", "Mn", "Me"}:
+            continue
+        if category == "Cc" and char not in "\t\n\r":
+            continue
+        if category.startswith("Z"):
+            parts.append(" ")
+            continue
+        parts.append(char)
+    return "".join(parts)
+
+
+def quote_sql_ident(name: str) -> str:
+    text = name.strip()
+    if not text:
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, name)
+    return '"' + text.replace('"', '""') + '"'
+
+
+def _layer1_table_key(name: str) -> str:
+    return name.strip().strip('`"').lower()
+
+
+def _require_select_sql(sql: str) -> str:
+    if not isinstance(sql, str) or not sql.strip():
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    stripped = sql.strip().rstrip(";")
+    if ";" in stripped:
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    if "/*!" in stripped:
+        if _SQL_WRITE_RE.search(stripped):
+            raise McpQueryError(FailureReason.SQL_WRITE, sql)
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    noise_free = _strip_sql_noise(stripped)
+    if _SQL_WRITE_RE.search(noise_free) or _SQL_WRITE_RE.search(stripped):
+        raise McpQueryError(FailureReason.SQL_WRITE, sql)
+    if _SQL_DANGEROUS_RE.search(noise_free) or _SQL_DANGEROUS_RE.search(stripped):
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    if not _SQL_SELECT_HEAD_RE.search(noise_free):
+        raise McpQueryError(FailureReason.SQL_NOT_ALLOWED, sql)
+    return stripped
 
 
 def _strip_sql_noise(sql: str) -> str:
