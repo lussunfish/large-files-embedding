@@ -152,11 +152,19 @@ def _extract_csv(path: Path) -> ExtractedTabular:
     delimiter = _sniff_delimiter(sample_text)
     skip_rows = _csv_skip_rows(sample_text, delimiter)
     utf8_path: Path | None = None
+    padded_path: Path | None = None
     scan_path = path
     try:
         if encoding not in {"utf-8", "utf8"}:
             utf8_path = _transcode_to_utf8(path, encoding)
             scan_path = utf8_path
+        if _leading_blank_rows(sample_text) or _looks_fixed_width_padded(sample_text):
+            padded_path = _rstrip_csv_lines(
+                scan_path,
+                encoding="utf-8" if utf8_path is not None else encoding,
+            )
+            scan_path = padded_path
+            skip_rows = _csv_skip_rows(_decoded_sample(scan_path, "utf-8"), delimiter)
         lf = pl.scan_csv(
             scan_path,
             separator=delimiter,
@@ -164,19 +172,22 @@ def _extract_csv(path: Path) -> ExtractedTabular:
             infer_schema_length=1000,
             try_parse_dates=False,
             skip_rows=skip_rows,
+            truncate_ragged_lines=True,
         )
-        schema_names = [
-            str(name).lstrip("\ufeff") for name in lf.collect_schema().names()
-        ]
+        raw_names = list(lf.collect_schema().names())
+        unique = _unique_names(
+            [
+                str(name).lstrip("\ufeff").strip() or f"col_{index}"
+                for index, name in enumerate(raw_names)
+            ]
+        )
         rename = {
-            old: old.lstrip("\ufeff")
-            for old in lf.collect_schema().names()
-            if str(old).startswith("\ufeff")
+            old: new for old, new in zip(raw_names, unique, strict=True) if old != new
         }
         if rename:
             lf = lf.rename(rename)
         sample = lf.head(5).collect()
-        original_columns = tuple(str(col) for col in (sample.columns or schema_names))
+        original_columns = tuple(str(col) for col in (sample.columns or unique))
         ingested_at = datetime.now(UTC)
         period = report_period_from_name(path.name)
         mapping = infer_fact_mapping(original_columns)
@@ -256,6 +267,8 @@ def _extract_csv(path: Path) -> ExtractedTabular:
     finally:
         if utf8_path is not None:
             utf8_path.unlink(missing_ok=True)
+        if padded_path is not None:
+            padded_path.unlink(missing_ok=True)
 
 
 class _WorkbookBuilder:
@@ -662,6 +675,50 @@ def _csv_skip_rows(sample: str, delimiter: str) -> int:
     if not _looks_like_header(first) and _looks_like_header(second):
         return 1
     return 0
+
+
+def _leading_blank_rows(sample: str) -> int:
+    count = 0
+    for line in sample.splitlines():
+        if line.strip():
+            break
+        count += 1
+    return count
+
+
+def _looks_fixed_width_padded(sample: str) -> bool:
+    lines = [line.rstrip("\n\r") for line in sample.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    widths = {len(line) for line in lines[:20]}
+    if len(widths) != 1:
+        return False
+    width = next(iter(widths))
+    if width < 40:
+        return False
+    return any(line.endswith("  ") for line in lines[:20])
+
+
+def _rstrip_csv_lines(path: Path, *, encoding: str) -> Path:
+    handle, name = tempfile.mkstemp(prefix="csv-rstrip-", suffix=".csv")
+    out = Path(name)
+    leading = True
+    try:
+        with (
+            path.open("r", encoding=encoding, newline="") as src,
+            os.fdopen(handle, "w", encoding="utf-8", newline="") as dst,
+        ):
+            for line in src:
+                body = line.rstrip("\n\r").rstrip(" \t")
+                if leading and not body:
+                    continue
+                leading = False
+                dst.write(body)
+                dst.write("\n")
+    except Exception:
+        out.unlink(missing_ok=True)
+        raise
+    return out
 
 
 def _detect_encoding(path: Path) -> str:

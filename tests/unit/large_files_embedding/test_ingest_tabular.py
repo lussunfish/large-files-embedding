@@ -541,6 +541,33 @@ def test_excel_serial_dates_convert_from_1899_epoch() -> None:
     assert convert_excel_serial(3, column="건수") == 3
 
 
+def test_fixed_width_padded_csv_extracts_quoted_columns(tmp_path: Path) -> None:
+    from large_files_embedding.infrastructure.calamine_extractor import (
+        CalamineTabularExtractor,
+    )
+
+    header = '"Org","Grant Number","City"'
+    row = '"ACME, INC.","R01AI1","BOSTON"'
+    width = 80
+    lines = [
+        " " * width,
+        header + (" " * (width - len(header))),
+        row + (" " * (width - len(row))),
+    ]
+    path = tmp_path / "nih-padded.csv"
+    path.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
+    extracted = CalamineTabularExtractor().extract(path, doc_id="nih")
+    sheet = extracted.sheets[0]
+    try:
+        assert sheet.n_rows == 1
+        assert "Grant Number" in sheet.original_columns
+        assert "Org" in sheet.original_columns
+        assert sheet.kind is SheetKind.DATA
+    finally:
+        if sheet.parquet_path is not None:
+            sheet.parquet_path.unlink(missing_ok=True)
+
+
 def test_infer_mapping_ledger_vs_unmapped() -> None:
     assert infer_fact_mapping(("품번", "원인", "대책", "건수")) == "claim_event"
     assert infer_fact_mapping(("품번", "근본원인", "대책")) == "claim_event"
